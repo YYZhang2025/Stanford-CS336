@@ -1,11 +1,12 @@
 from typing import List, Tuple, Dict
-from dataclasses import dataclass
-from typing import Dict, Tuple, List,  BinaryIO
+from typing import Dict, Tuple, List, Iterable, Iterator
 import regex as re
 from queue import Empty
 from multiprocessing import Process, Queue, Manager
 
 from collections import Counter
+
+from tqdm import trange
 
 import os 
 
@@ -64,18 +65,10 @@ def split_by_special_tokens(
 #             word_byte_counter[tuple(byte_word)] += 1    
 #     return word_byte_counter
 
-def pre_tokenize_string(
-    input_path: str | os.PathLike, special_tokens: list[str], queue: Queue, start: int, end: int, include_special: bool = False,
-):
-    """
-    Pre-tokenize a string into bytes.
-    """
 
+def pre_tokenize_string(text: str, special_tokens: List[str], include_special: bool = False) -> Counter:
     word_counter = Counter()
-    with open(input_path, "rb") as f:
-        f.seek(start)
-        chunk = f.read(end - start).decode("utf-8", errors="ignore")
-    special_chunks = split_by_special_tokens(chunk, special_tokens, include_special)
+    special_chunks = split_by_special_tokens(text, special_tokens, include_special)
 
     for chunk in special_chunks:
         if chunk in special_tokens:
@@ -87,6 +80,22 @@ def pre_tokenize_string(
                 word = match.group(0)
                 token = tuple(word_to_bytes(word))
                 word_counter[token] += 1
+
+    return word_counter
+
+
+# TODO: Implement the worker for this.
+def pre_tokenize_string_worker(
+    input_path: str | os.PathLike, special_tokens: list[str], queue: Queue, start: int, end: int, include_special: bool = False,
+):
+    """
+    Pre-tokenize a string into bytes.
+    """
+    with open(input_path, "rb") as f:
+        f.seek(start)
+        chunk = f.read(end - start).decode("utf-8", errors="ignore")
+        
+    word_counter = pre_tokenize_string(chunk, special_tokens, include_special)
                 
     # Put the result in the queue
     queue.put(word_counter)
@@ -204,7 +213,7 @@ def train_bpe(
     
     for start, end in zip(chunk_boundaries[:-1], chunk_boundaries[1:]):
         p = Process(
-            target=pre_tokenize_string,
+            target=pre_tokenize_string_worker,
             args=(input_path, special_tokens, queue, start, end, False),
         )
         processes.append(p)
@@ -223,9 +232,9 @@ def train_bpe(
     # End Pre-tokenization
 
     pairs_freqs = pair_counts(word_counter)
-
+    
     num_merges = vocab_size - len(vocab)
-    for _ in range(num_merges):
+    for _ in trange(num_merges):
 
         most_common_pair = get_most_frequent_pair(pairs_freqs)
 
@@ -235,3 +244,85 @@ def train_bpe(
         word_counter, pairs_freqs = merge_pair(word_counter, most_common_pair)
 
     return vocab, merges
+
+def split_by_special_tokens(text: str, special_tokens: list[str]) -> List[str]:
+    special_tokens_sorted = sorted(special_tokens, key=len, reverse=True)
+    if not special_tokens_sorted:
+        return [text]
+    pattern = "|".join(re.escape(tok) for tok in special_tokens_sorted)
+    return re.split(f"({pattern})", text)
+
+
+# === 预分词 ===
+def pretokenize(
+    text: str, special_tokens: list[str], drop_special_token: bool = True
+) -> List[bytes]:
+    parts = split_by_special_tokens(text, special_tokens)
+    tokens_list = []
+    for part in parts:
+        if part in special_tokens:
+            if not drop_special_token:
+                tokens_list.append(part.encode("utf-8"))
+        else:
+            tokens = re.findall(PAT, part)
+            tokens_list.extend(token.encode("utf-8") for token in tokens)
+            
+    return tokens_list
+
+
+
+class Tokenizer:
+    def __init__(
+        self,
+        vocab: dict[int, bytes],
+        merges: list[Tuple[bytes, bytes]],
+        special_tokens: list[str] | None = None,
+    ):
+        self.vocab = vocab
+        self.merges = merges
+        self.special_tokens = special_tokens or []
+
+    def encode(self, text: str) -> list[int]:
+        vocab_rev = {v: k for k, v in self.vocab.items()}
+        byte_tokens = pretokenize(text, self.special_tokens, drop_special_token=False)
+        pretokens = []
+        for bt in byte_tokens:
+            if bt in [tok.encode() for tok in self.special_tokens]:
+                pretokens.append([vocab_rev[bt]])
+            else:
+                pretokens.append([vocab_rev[bytes([b])] for b in bt])
+
+        for i, pretoken in enumerate(pretokens):
+            for merge in self.merges:
+                new_index = vocab_rev[merge[0] + merge[1]]
+                merged = []
+                j = 0
+                while j < len(pretoken):
+                    if (
+                        j < len(pretoken) - 1
+                        and (self.vocab[pretoken[j]], self.vocab[pretoken[j + 1]])
+                        == merge
+                    ):
+                        merged.append(new_index)
+                        j += 2
+                    else:
+                        merged.append(pretoken[j])
+                        j += 1
+                pretoken = merged
+            pretokens[i] = pretoken
+
+        return [id for pre in pretokens for id in pre]
+
+    def decode(self, ids: list[int]) -> str:
+        tokens = b"".join(self.vocab.get(i, b"\xef\xbf\xbd") for i in ids)
+        return tokens.decode("utf-8", errors="replace")
+
+    def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
+        for line in iterable:
+            yield from self.encode(line)
+
+    @classmethod
+    def from_files(
+        cls, vocab_path: str, merges_path: str, special_tokens: list[str] | None = None
+    ):
+        raise NotImplementedError
