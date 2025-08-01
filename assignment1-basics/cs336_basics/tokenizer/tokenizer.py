@@ -1,18 +1,18 @@
-from typing import List, Tuple, Dict
 from typing import Dict, Tuple, List, Iterable, Iterator
+from collections import Counter
 import regex as re
+
 from queue import Empty
 from multiprocessing import Process, Queue, Manager
 
-from collections import Counter
 
 from tqdm import trange
 
 import os 
 
 
-from cs336_basics.pretokenization_regular_pattern import PAT
-from cs336_basics.utils import find_chunk_boundaries 
+from cs336_basics.tokenizer.pretokenization_regular_pattern import PAT
+from cs336_basics.tokenizer.utils import find_chunk_boundaries 
 
 
 def initialize_vocab(special_tokens: List[bytes]) -> Dict[int, bytes]:
@@ -32,43 +32,21 @@ def word_to_bytes(word: str) -> List[bytes]:
 
 
 def split_by_special_tokens(
-    text: str, special_tokens: list[str], include_special: bool = False
+    text: str, special_tokens: list[str]
 ) -> List[str]:
     special_tokens_sorted = sorted(special_tokens, key=len, reverse=True)
+    if not special_tokens_sorted:
+        return [text]
     pattern = "|".join(re.escape(t) for t in special_tokens_sorted)
-
-    if include_special:
-        special_chunks = re.split(f"({pattern})", text)
-    else:
-        # Split without capturing the special tokens
-        special_chunks = re.split(pattern, text)
+    special_chunks = re.split(f"({pattern})", text)
 
     return special_chunks
 
-# def pre_tokenize_string(chunk: str, special_tokens: List[bytes], drop_special_token: bool = True) -> Dict[Tuple[bytes], int]:
-#     # 1. Split the chunk into words using regex
-#     special_tokens_sorted = sorted(special_tokens, key=len, reverse=True)
-#     tokens = []
-#     if not special_tokens_sorted:
-#         return [chunk]
-#     else:
-#         pattern = "|".join(re.escape(tok) for tok in special_tokens_sorted)
-#         tokens = re.split(f"({pattern})", chunk)
-#         if drop_special_token:
-#             tokens = [tok for tok in tokens if tok not in special_tokens_sorted]
-
-#     # 2. Convert each word to bytes
-#     word_byte_counter = Counter()
-#     for word in tokens:
-#         if word:
-#             byte_word = word_to_bytes(word, num_special_tokens=len(special_tokens))
-#             word_byte_counter[tuple(byte_word)] += 1    
-#     return word_byte_counter
 
 
 def pre_tokenize_string(text: str, special_tokens: List[str], include_special: bool = False) -> Counter:
     word_counter = Counter()
-    special_chunks = split_by_special_tokens(text, special_tokens, include_special)
+    special_chunks = split_by_special_tokens(text, special_tokens)
 
     for chunk in special_chunks:
         if chunk in special_tokens:
@@ -100,7 +78,6 @@ def pre_tokenize_string_worker(
     # Put the result in the queue
     queue.put(word_counter)
 
-    # return word_counter
 
 
 def pair_counts(
@@ -245,82 +222,114 @@ def train_bpe(
 
     return vocab, merges
 
-def split_by_special_tokens(text: str, special_tokens: list[str]) -> List[str]:
-    special_tokens_sorted = sorted(special_tokens, key=len, reverse=True)
-    if not special_tokens_sorted:
-        return [text]
-    pattern = "|".join(re.escape(tok) for tok in special_tokens_sorted)
-    return re.split(f"({pattern})", text)
-
-
-# === 预分词 ===
-def pretokenize(
-    text: str, special_tokens: list[str], drop_special_token: bool = True
-) -> List[bytes]:
-    parts = split_by_special_tokens(text, special_tokens)
-    tokens_list = []
-    for part in parts:
-        if part in special_tokens:
-            if not drop_special_token:
-                tokens_list.append(part.encode("utf-8"))
-        else:
-            tokens = re.findall(PAT, part)
-            tokens_list.extend(token.encode("utf-8") for token in tokens)
-            
-    return tokens_list
-
 
 
 class Tokenizer:
     def __init__(
-        self,
-        vocab: dict[int, bytes],
-        merges: list[Tuple[bytes, bytes]],
-        special_tokens: list[str] | None = None,
+        self, 
+        vocab: Dict[int, bytes], 
+        merges: List[Tuple[bytes, bytes]],
+        special_tokens: List[str] | None = []
     ):
         self.vocab = vocab
         self.merges = merges
-        self.special_tokens = special_tokens or []
+        
+        # self.register_special_tokens(special_tokens)
+        self.vocab_inv = {v: k for k, v in self.vocab.items()}
+        
+        if special_tokens is None:
+            self.special_tokens = {}
+            self.bytes_special_tokens = []
+        else:
+            self.special_tokens = {token: i for i, token in enumerate(special_tokens, start=len(self.vocab))}
+            self.bytes_special_tokens = [token.encode("utf-8") for token in special_tokens if isinstance(token, str)]
 
-    def encode(self, text: str) -> list[int]:
-        vocab_rev = {v: k for k, v in self.vocab.items()}
-        byte_tokens = pretokenize(text, self.special_tokens, drop_special_token=False)
-        pretokens = []
-        for bt in byte_tokens:
-            if bt in [tok.encode() for tok in self.special_tokens]:
-                pretokens.append([vocab_rev[bt]])
+        
+        
+    
+    def register_special_tokens(self, special_tokens):
+        if special_tokens is None:
+            self.special_tokens = {}
+            self.bytes_special_tokens = []
+            return
+        
+        if not all(isinstance(token, bytes) for token in special_tokens):
+            bytes_special_tokens = [token.encode("utf-8") for token in special_tokens if isinstance(token, str)]
+            
+        for i, token in enumerate(bytes_special_tokens, start=len(self.vocab)):
+            # Add special tokens to the vocabulary
+            self.vocab[i] = token
+            
+        # self.bytes_special_tokens = bytes_special_tokens
+        # self.special_tokens = {token: i for i, token in enumerate(special_tokens, start=len(self.vocab))}
+        
+    def _pre_tokenize(self, text) -> List[bytes]:
+        """
+        Pre-tokenize the input text into bytes.
+        """
+        parts = split_by_special_tokens(text, list(self.special_tokens.keys()))
+        token_list = []
+        
+        for part in parts:
+            if part in self.special_tokens.keys():
+                token_list.append(part.encode("utf-8"))
             else:
-                pretokens.append([vocab_rev[bytes([b])] for b in bt])
+                tokens = re.findall(PAT, part)
+                token_list.extend(word_to_bytes(token) for token in tokens)
 
-        for i, pretoken in enumerate(pretokens):
+        return token_list
+    
+
+    
+    def encode(self, text: str) -> List[int]:
+        byte_tokens = self._pre_tokenize(text)
+        
+
+        # Convert byte tokens to indices
+        token_ids = []
+        for byte_token in byte_tokens:
+            # print(f"Processing byte token: {byte_token}")
+            if byte_token in self.bytes_special_tokens:
+                token_ids.append([self.vocab_inv[byte_token]])
+            else:
+                token_ids.append([self.vocab_inv[b] for b in byte_token])
+
+        for i, pretoken in enumerate(token_ids):
             for merge in self.merges:
-                new_index = vocab_rev[merge[0] + merge[1]]
+                new_index = self.vocab_inv.get(merge[0] + merge[1], None)
+                if new_index is None:
+                    continue
+
                 merged = []
                 j = 0
                 while j < len(pretoken):
                     if (
                         j < len(pretoken) - 1
-                        and (self.vocab[pretoken[j]], self.vocab[pretoken[j + 1]])
-                        == merge
+                        and (self.vocab[pretoken[j]], self.vocab[pretoken[j + 1]]) == merge
                     ):
                         merged.append(new_index)
                         j += 2
                     else:
                         merged.append(pretoken[j])
                         j += 1
+                        
                 pretoken = merged
-            pretokens[i] = pretoken
+            token_ids[i] = pretoken[:]
 
-        return [id for pre in pretokens for id in pre]
+        return [i for pre in token_ids for i in pre]
+        
 
-    def decode(self, ids: list[int]) -> str:
-        tokens = b"".join(self.vocab.get(i, b"\xef\xbf\xbd") for i in ids)
-        return tokens.decode("utf-8", errors="replace")
+    
 
     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
         for line in iterable:
             yield from self.encode(line)
-
+    
+    def decode(self, ids: list[int]) -> str:
+        # https://en.wikipedia.org/wiki/Specials_(Unicode_block)#Replacement_character
+        tokens = b"".join(self.vocab.get(i, b"\xef\xbf\xbd") for i in ids)
+        return tokens.decode("utf-8", errors="replace")
+    
     @classmethod
     def from_files(
         cls, vocab_path: str, merges_path: str, special_tokens: list[str] | None = None
