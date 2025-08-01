@@ -321,9 +321,23 @@ class Tokenizer:
 
     
 
-    def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
+    def encode_iterable(self, iterable: Iterable[str], batch_size: int = 1024) -> Iterator[int]:
+        """
+        Encode lines of text from an iterable using buffered batching.
+        This version preserves newlines by assuming the input was split with `splitlines(keepends=True)`.
+        """
+        batch = []
         for line in iterable:
-            yield from self.encode(line)
+            if not line:
+                continue
+            batch.append(line)
+            if len(batch) >= batch_size:
+                for encoded in map(self.encode, batch):
+                    yield from encoded
+                batch.clear()
+        if batch:
+            for encoded in map(self.encode, batch):
+                yield from encoded
     
     def decode(self, ids: list[int]) -> str:
         # https://en.wikipedia.org/wiki/Specials_(Unicode_block)#Replacement_character
