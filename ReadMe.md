@@ -25,3 +25,27 @@ In the assignment 1, it will ask you to implement the:
 - Multi-head Attention
 
 And so on, for me, the most challenging and error-prone part is the BPE Tokenizer.  After that, the rest of the code is relatively straightforward. If you want to learn about Transformer, I highly recommend through my this post [PwC-01: Transformer](https://yuyang.info/100-AI-Papers/posts/01-transformer.html)(Due to the limited time, I only wrote the Chinese version, but code part is available).
+
+
+### Assignment 02: System
+```Python
+raise NotImplementedError("This assignment is not implemented yet.")
+```
+
+
+
+### Assignment 03: Scaling 
+```Python
+raise NotImplementedError("This assignment is not implemented yet.")
+```
+
+
+### Assignment 04: Data 
+```Python
+raise NotImplementedError("This assignment is not implemented yet.")
+```
+
+### Assignment 05: Alignment and Reasoning RL 
+```Python
+raise NotImplementedError("This assignment is not implemented yet.")
+```
