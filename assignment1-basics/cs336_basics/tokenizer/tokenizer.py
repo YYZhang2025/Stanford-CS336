@@ -6,7 +6,8 @@ from queue import Empty
 from multiprocessing import Process, Queue, Manager
 
 
-from tqdm import trange
+from tqdm import trange, tqdm
+import pickle
 
 import os 
 
@@ -292,7 +293,7 @@ class Tokenizer:
             if byte_token in self.bytes_special_tokens:
                 token_ids.append([self.vocab_inv[byte_token]])
             else:
-                token_ids.append([self.vocab_inv[b] for b in byte_token])
+                token_ids.append([self.vocab_inv[b] for b in byte_token]) #type: ignore
 
         for i, pretoken in enumerate(token_ids):
             for merge in self.merges:
@@ -327,7 +328,7 @@ class Tokenizer:
         This version preserves newlines by assuming the input was split with `splitlines(keepends=True)`.
         """
         batch = []
-        for line in iterable:
+        for line in tqdm(iterable):
             if not line:
                 continue
             batch.append(line)
@@ -335,12 +336,14 @@ class Tokenizer:
                 for encoded in map(self.encode, batch):
                     yield from encoded
                 batch.clear()
+                
         if batch:
             for encoded in map(self.encode, batch):
                 yield from encoded
     
     def decode(self, ids: list[int]) -> str:
         # https://en.wikipedia.org/wiki/Specials_(Unicode_block)#Replacement_character
+        
         tokens = b"".join(self.vocab.get(i, b"\xef\xbf\xbd") for i in ids)
         return tokens.decode("utf-8", errors="replace")
     
@@ -348,4 +351,19 @@ class Tokenizer:
     def from_files(
         cls, vocab_path: str, merges_path: str, special_tokens: list[str] | None = None
     ):
-        raise NotImplementedError
+        with open(vocab_path, 'rb') as vf:
+            raw_vocab = pickle.load(vf)
+
+        vocab = {int(k): (v.encode("utf-8") if isinstance(v, str) else v)
+                for k, v in raw_vocab.items()}
+
+        with open(merges_path, 'rb') as mf:
+            raw_merges = pickle.load(mf)
+
+        merges = []
+        for a, b in raw_merges:
+            merges.append((
+                a.encode("utf-8") if isinstance(a, str) else a,
+                b.encode("utf-8") if isinstance(b, str) else b
+            ))
+        return cls(vocab, merges, special_tokens)
