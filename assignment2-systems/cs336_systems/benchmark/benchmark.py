@@ -22,7 +22,7 @@ model_configs = [
 
 # Constants
 vocab_size = 10_000
-context_length = 512
+context_length = 256
 batch_size = 8
 rope_theta = 10000.0
 warmup_steps = 5
@@ -100,6 +100,11 @@ def main():
         }]
     else:
         raise ValueError("Must specify either --all or all custom model hyperparameters.")
+    
+    print("\nRunning the following configurations:")
+    for cfg in configs_to_run:
+        print(f"  - {cfg}")
+    print()
 
     for config in configs_to_run:
         for mode in ["forward", "forward_backward"]:
@@ -115,6 +120,7 @@ def main():
                 rope_theta=rope_theta,
             ).to(device)
 
+            # Create random input data  
             x = torch.randint(
                 0, vocab_size, (batch_size, context_length), device=device
             )
@@ -123,6 +129,11 @@ def main():
             )
 
             avg, std = benchmark(model, x, y, mode)
+            
+            print(f"  - {config['size']} [{mode}]: Avg Time = {avg:.6f}s, Std Dev = {std:.6f}s")
+            del model, x, y 
+            torch.cuda.empty_cache()
+            
 
             results.append(
                 {
@@ -138,6 +149,7 @@ def main():
                     "Warmup Steps": warmup_steps,
                 }
             )
+
 
     # Output results
     df = pd.DataFrame(results)
