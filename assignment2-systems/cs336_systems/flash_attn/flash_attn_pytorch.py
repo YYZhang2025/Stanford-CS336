@@ -71,7 +71,7 @@ class FlashAttentionPyTorchImpl(torch.autograd.Function):
         ctx.save_for_backward(q, k, v, O, L)
         ctx.is_causal = is_causal
         
-        return O, L 
+        return O
 
     @staticmethod
     def backward(ctx, grad_out):
