@@ -30,4 +30,5 @@ def get_batch(
     if device:
         inputs = inputs.to(device)
         targets = targets.to(device)
+        
     return inputs, targets

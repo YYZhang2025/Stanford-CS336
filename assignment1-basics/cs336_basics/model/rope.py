@@ -34,6 +34,8 @@ class RotaryPositionalEmbedding(nn.Module):
             token_positions = torch.arange(seq_len, device=x.device)
             token_positions = token_positions.unsqueeze(0).expand(x.size(0), -1)
 
+        # (B, S), (d_k // 2) => (B, S, d_k // 2)
+        # Equal to token_positions[..., :, None] * self.inv_freq[None, None, :]
         theta = torch.einsum("... n, d ->  ... n d", token_positions, self.inv_freq)
         
         # get cos and sine 

@@ -72,6 +72,7 @@ def parse_args():
     parser.add_argument("--num_heads", type=int, help="Number of attention heads")
     parser.add_argument("--all", action="store_true", help="Run all predefined configurations")
     parser.add_argument("--context_length", type=int, help="Sequence context length")
+    parser.add_argument("--warmup_steps", type=int, help="Number of warmup steps")
     return parser.parse_args()
 
 
@@ -80,6 +81,9 @@ def main():
     global context_length
     if args.context_length:
         context_length = args.context_length
+    global warmup_steps
+    if args.warmup_steps:
+        warmup_steps = args.warmup_steps
     results = []
 
     configs_to_run = []
@@ -131,6 +135,7 @@ def main():
                     "Context Length": context_length,
                     "Avg Time (s)": round(avg, 6),
                     "Std Dev (s)": round(std, 6),
+                    "Warmup Steps": warmup_steps,
                 }
             )
 
