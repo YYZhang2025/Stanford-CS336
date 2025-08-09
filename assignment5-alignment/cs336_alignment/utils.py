@@ -1,15 +1,16 @@
 import torch
 import torch.nn.functional as F  
 
-from transformers import PretrainedTokenizer 
+from transformers import PreTrainedTokenizerBase 
 
 def tokenize_prompt_and_output(prompt_strs, output_strs, tokenizer: PreTrainedTokenizerBase):
-    assert len(prompt_strs) == len(output_strs)
+    assert len(prompt_strs) == len(output_strs), "Prompt and output lists must have the same length"
+    
     pad_id = tokenizer.pad_token_id or tokenizer.eos_token_id or 0
 
     # Tokenize separately (no padding yet)
-    prompt_enc = tokenizer(prompt_strs, padding=False, return_tensors=None)["input_ids"]
-    output_enc = tokenizer(output_strs, padding=False, return_tensors=None)["input_ids"]
+    prompt_enc = tokenizer(prompt_strs, padding=False, add_special_tokens=False)["input_ids"]
+    output_enc = tokenizer(output_strs, padding=False, add_special_tokens=False)["input_ids"]
 
     # Concatenate and record lengths
     concat_ids = []
@@ -19,17 +20,17 @@ def tokenize_prompt_and_output(prompt_strs, output_strs, tokenizer: PreTrainedTo
         prompt_lens.append(len(p_ids))
 
     # Find max length, then subtract 1 for shift
-    L_max = max(len(seq) for seq in concat_ids)
-    T = L_max - 1
+    T = max(len(seq) for seq in concat_ids) - 1
+    B = len(concat_ids)
 
     # Prepare tensors
-    input_ids = torch.full((len(concat_ids), T), pad_id, dtype=torch.long)
-    labels = torch.full((len(concat_ids), T), pad_id, dtype=torch.long)
-    response_mask = torch.zeros((len(concat_ids), T), dtype=torch.long)
+    input_ids = torch.full((B, T), pad_id, dtype=torch.long)
+    labels = torch.full((B, T), pad_id, dtype=torch.long)
+    response_mask = torch.zeros((B, T), dtype=torch.long)
 
     for i, (seq, p_len) in enumerate(zip(concat_ids, prompt_lens)):
-        inp = seq[:-1]
-        lab = seq[1:]
+        inp = seq[:-1] # Input
+        lab = seq[1:] # Label 
         n = len(inp)
         input_ids[i, :n] = torch.tensor(inp, dtype=torch.long)
         labels[i, :n] = torch.tensor(lab, dtype=torch.long)
@@ -74,15 +75,15 @@ def get_response_log_probs(
 def masked_normalize(
     tensor: torch.Tensor, 
     mask: torch.Tensor,
-    normalize_constant: float, 
+    normalize_constant: float = 1.0, 
     dim: int | None = None 
 ) -> torch.Tensor:
-    mask_bool = mask.bool()
-    masked_tensor = tensor.masked_fill(~mask_bool, 0.0)
+    assert normalize_constant != 0, 'Normalization constant must not be zero'
+    masked_tensor = tensor * mask
+    
     
     summed = masked_tensor.sum(dim = dim ) if dim is not None else masked_tensor.sum()
-    return tensor / (summed + normalize_constant)
-
+    return summed / normalize_constant 
 
 
 def sft_microbatch_train_step(
@@ -91,3 +92,44 @@ def sft_microbatch_train_step(
     gradient_accumulation_steps: int,
     normalize_constant: float = 1.0,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Single micro-batch SFT update.
+
+    Args:
+        policy_log_probs: (B, T) per-token log-probs for the *ground-truth* tokens.
+        response_mask:   (B, T) 1 for response tokens, 0 for prompt/pad.
+        gradient_accumulation_steps: number of micro-batches per optimizer step.
+        normalize_constant: divide the masked sum by this value (e.g., total response tokens in microbatch).
+    Returns:
+        loss (scalar tensor) and metadata dict.
+    """
+    assert gradient_accumulation_steps > 0, "Gradient accumulation steps must be positive"
+    assert policy_log_probs.shape == response_mask.shape, "policy_log_probs and response_mask must have same shape"
+
+    # Ensure proper dtypes
+    mask = response_mask.to(dtype=policy_log_probs.dtype)
+
+    # Negative log-likelihood on response tokens only
+    # sum over batch and time, then normalize
+    masked_sum = (policy_log_probs * mask).sum()
+    loss = -(masked_sum / normalize_constant)
+
+    # Adjust for gradient accumulation (simulate splitting the full batch)
+    if gradient_accumulation_steps > 1:
+        loss = loss / gradient_accumulation_steps
+
+    # Backprop for this microbatch
+    loss.backward()
+
+    # Metadata for logging (detach to avoid holding graph)
+    num_resp_tokens = mask.sum()
+    total_nll = -masked_sum
+    avg_nll_per_token = total_nll / (num_resp_tokens.clamp_min(1.0))
+
+    metadata: dict[str, torch.Tensor] = {
+        "loss": loss.detach(),
+        "num_response_tokens": num_resp_tokens.detach(),
+        "total_nll": total_nll.detach(),
+        "avg_nll_per_token": avg_nll_per_token.detach(),
+    }
+
+    return loss, metadata

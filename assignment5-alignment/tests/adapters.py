@@ -31,7 +31,10 @@ def run_tokenize_prompt_and_output(
             "response_mask": torch.Tensor of shape (batch_size, max(prompt_and_output_lens) - 1):
                 a mask on the response tokens in `labels`.
     """
-    raise NotImplementedError
+    # raise NotImplementedError
+    from cs336_alignment.utils import tokenize_prompt_and_output
+
+    return tokenize_prompt_and_output(prompt_strs, output_strs, tokenizer)
 
 
 def run_compute_group_normalized_rewards(
@@ -82,7 +85,10 @@ def run_compute_group_normalized_rewards(
 
 def run_compute_entropy(logits: torch.Tensor) -> torch.Tensor:
     """Get the entropy of the logits (i.e., entropy of the final dimension)."""
-    raise NotImplementedError
+    # raise NotImplementedError
+    from cs336_alignment.utils import compute_entropy
+
+    return compute_entropy(logits)
 
 
 def run_get_response_log_probs(
@@ -114,7 +120,15 @@ def run_get_response_log_probs(
                 we have not masked out the token indices corresponding to the prompt
                 or padding; that is done in the train loop.
     """
-    raise NotImplementedError
+    # raise NotImplementedError
+    from cs336_alignment.utils import get_response_log_probs
+
+    return get_response_log_probs(
+        model=model,
+        input_ids=input_ids,
+        labels=labels,
+        return_token_entropy=return_token_entropy,
+    )
 
 
 def run_compute_naive_policy_gradient_loss(
@@ -267,7 +281,15 @@ def run_masked_normalize(
         torch.Tensor, the normalized sum, where masked elements
             (mask=0) don't contribute to the sum.
     """
-    raise NotImplementedError
+    # raise NotImplementedError
+    from cs336_alignment.utils import masked_normalize
+
+    return masked_normalize(
+        tensor=tensor,
+        mask=mask,
+        dim=dim,
+        normalize_constant=normalize_constant,
+    )
 
 
 """
