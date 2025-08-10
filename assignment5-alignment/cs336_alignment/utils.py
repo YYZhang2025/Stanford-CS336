@@ -7,6 +7,7 @@ def tokenize_prompt_and_output(prompt_strs, output_strs, tokenizer: PreTrainedTo
     assert len(prompt_strs) == len(output_strs), "Prompt and output lists must have the same length"
     
     pad_id = tokenizer.pad_token_id or tokenizer.eos_token_id or 0
+    print(pad_id)
 
     # Tokenize separately (no padding yet)
     prompt_enc = tokenizer(prompt_strs, padding=False, add_special_tokens=False)["input_ids"]
@@ -16,7 +17,7 @@ def tokenize_prompt_and_output(prompt_strs, output_strs, tokenizer: PreTrainedTo
     concat_ids = []
     prompt_lens = []
     for p_ids, o_ids in zip(prompt_enc, output_enc):
-        concat_ids.append(p_ids + o_ids)
+        concat_ids.append(p_ids + o_ids + [tokenizer.eos_token_id])  # EOS at the end of each output
         prompt_lens.append(len(p_ids))
 
     # Find max length, then subtract 1 for shift
