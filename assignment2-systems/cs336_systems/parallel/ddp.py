@@ -2,25 +2,37 @@ import torch
 import torch.nn as nn 
 import torch.distributed as dist 
 
-class DDPModel(nn.Module):
-    def __init__(self, model: nn.Module):
+class DDPBase(nn.Module):
+    """Common utilities shared by DDP wrappers."""
+    def __init__(self, module: nn.Module):
         super().__init__()
-        self.model = model
-        
-        
+        self.module = module
+        # Defaults; will be overwritten if distributed is initialized
+        self.rank = 0
+        self.world_size = 1
+        self._init_dist_and_broadcast()
+
+    def __getattr__(self, name):
+        # Delegate missing attributes to the wrapped module for convenience
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self.module, name)
+
+    def _init_dist_and_broadcast(self):
+        """Initialize rank/world_size and broadcast parameters from rank 0."""
         if dist.is_initialized():
             self.rank = dist.get_rank()
             self.world_size = dist.get_world_size()
+            with torch.no_grad():
+                for p in self.module.parameters():
+                    dist.broadcast(p.data, src=0)
 
-            for param in self.model.parameters():
-                dist.broadcast(param.data, src=0)
-        else:
-            self.rank = 0
-            self.world_size = 1
-            
-            
+class DDPModel(DDPBase):
+    def __init__(self, module: nn.Module):
+        super().__init__(module)
         self.handles = []
-        for p in self.model.parameters():
+        for p in self.module.parameters():
             if p.requires_grad:
                 p.register_post_accumulate_grad_hook(self._hook)
 
@@ -32,7 +44,7 @@ class DDPModel(nn.Module):
         self.handles.append(handle)
         
     def forward(self, *inputs, **kwargs):
-        return self.model(*inputs, **kwargs)
+        return self.module(*inputs, **kwargs)
     
     
     def finish_gradient_synchronization(self):
@@ -42,7 +54,7 @@ class DDPModel(nn.Module):
         for handle in self.handles:
             handle.wait()
             
-        for p in self.model.parameters():
+        for p in self.module.parameters():
             if p.grad is not None:
                 p.grad /= self.world_size
         
@@ -50,24 +62,9 @@ class DDPModel(nn.Module):
         
 
 
-class DDPBucketed(nn.Module):
+class DDPBucketed(DDPBase):
     def __init__(self, module: nn.Module, bucket_size_mb: float):
-        
-        super().__init__()
-        
-        self.module = module
-        
-        if dist.is_initialized():
-            self.rank = dist.get_rank()
-            self.world_size = dist.get_world_size()
-        else:
-            self.rank = 0
-            self.world_size = 1
-        
-        for p in self.module.parameters():
-            if dist.is_initialized():
-                dist.broadcast(p.data, src=0)   
-
+        super().__init__(module)
         
         self.buckets = []
         self.param_to_bucket = {}
@@ -83,22 +80,17 @@ class DDPBucketed(nn.Module):
         
         
         for p in params_in_reverse:
-            if p.requires_grad and id(p) not in visited:
-                visited.add(id(p))
-                
-                if p.grad is None:
-                    continue
-                
+            if p.requires_grad and id(p) not in visited:            
                 param_size = p.numel() * p.element_size()
                 
-                if curr_size + param_size > bucket_size_mb:
-                    if curr_bucket:
-                        self.buckets.append(curr_bucket)
-                    curr_bucket = [p]
-                    curr_size = param_size
-                else:
-                    curr_bucket.append(p)
-                    curr_size += param_size
+                if curr_size + param_size > bucket_size_mb and curr_bucket:
+                    self.buckets.append(curr_bucket)
+                    curr_bucket = []
+                    curr_size = 0
+
+                curr_bucket.append(p)
+                curr_size += param_size
+                visited.add(id(p))
                 
         
         if curr_bucket:
@@ -120,7 +112,6 @@ class DDPBucketed(nn.Module):
         if param.grad is None or self.world_size <= 1:
             return
 
-        # 使用参数ID来查找桶
         bucket_index = self.param_to_bucket[id(param)]
         bucket = self.buckets[bucket_index]
         
