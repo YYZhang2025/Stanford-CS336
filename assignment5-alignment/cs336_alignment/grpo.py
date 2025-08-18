@@ -1,5 +1,7 @@
+# New function for policy gradient loss dispatch
 from typing import Callable, Literal
 
+import einops
 import torch
 import torch.nn.functional as F
 
@@ -12,53 +14,53 @@ def compute_group_normalized_rewards(
     advantage_eps: float,
     normalized_by_std: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
-    num_groups = len(rollout_responses) // group_size
+    raw_rewards = []
+    for rollout_response, gt_response in zip(rollout_responses, repeated_ground_truths):
+        curr_reward = reward_fn(rollout_response, gt_response)["reward"]
+        raw_rewards.append(curr_reward)
 
-    total_rewards = []
-    normalized_rewards = []
+    raw_rewards = torch.tensor(raw_rewards)  # prompts * group_size, 1
+    rewards_per_group = raw_rewards.reshape((-1, group_size))  # prompts * group_size
+    mean_reward_per_group = torch.mean(rewards_per_group, dim=-1, keepdim=True)  # prompts * 1
+    advantage = rewards_per_group - mean_reward_per_group  # prompts * group_size
 
-    for i in range(num_groups):
-        group_rewards = []
-        groups_response = rollout_responses[i * group_size : (i + 1) * group_size]
+    if normalized_by_std:
+        std_reward_per_group = torch.std(rewards_per_group, dim=-1, keepdim=True)
+        advantage /= std_reward_per_group + advantage_eps  # prompts
+    advantage = advantage.flatten()  # prompts * group_size, 1
 
-        for j in range(group_size):
-            reward = reward_fn(groups_response[j], repeated_ground_truths[i * group_size + j])
-            group_rewards.append(reward)
+    metadata = {
+        "mean": torch.mean(raw_rewards).item(),
+        "std": torch.std(raw_rewards).item(),
+        "max": torch.max(raw_rewards).item(),
+        "min": torch.min(raw_rewards).item(),
+    }
 
-        total_rewards.extend(group_rewards)
-        if normalized_by_std:
-            normalized_rewards.extend(
-                (torch.tensor(group_rewards) - torch.mean(torch.tensor(group_rewards)))
-                / (torch.std(torch.tensor(group_rewards)) + advantage_eps)
-            )
-        else:
-            normalized_rewards.extend(torch.tensor(group_rewards) - torch.mean(torch.tensor(group_rewards)))
-
-    return torch.cat(total_rewards), torch.cat(normalized_rewards), {}
+    return advantage, raw_rewards, metadata
 
 
 def compute_naive_policy_gradient_loss(
     raw_rewards_or_advantages: torch.Tensor,
     policy_log_probs: torch.Tensor,
 ) -> torch.Tensor:
-    raw_rewards_or_advantages_expand = raw_rewards_or_advantages.expand_as(policy_log_probs)
+    _, seq_len = policy_log_probs.shape
+    raw_rewards_or_advantages = einops.repeat(raw_rewards_or_advantages, "b 1->b s", s=seq_len)
+    loss = -raw_rewards_or_advantages * policy_log_probs
 
-    return raw_rewards_or_advantages_expand * policy_log_probs
-
-
-# New function for policy gradient loss dispatch
-from typing import Literal
+    return loss
 
 
 def compute_grpo_clip_loss(
     advantages: torch.Tensor, policy_log_probs: torch.Tensor, old_log_probs: torch.Tensor, cliprange: float
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    advantages = advantages.expand_as(policy_log_probs)
+    pi_ratio = torch.exp(policy_log_probs - old_log_probs)
+    _, seq_len = policy_log_probs.shape
+    advantages = einops.repeat(advantages, "b 1 -> b s", s=seq_len)
+    v = pi_ratio * advantages
+    v_clip = torch.clip(pi_ratio, min=1 - cliprange, max=1 + cliprange) * advantages
 
-    ratio = torch.exp(policy_log_probs - old_log_probs)
-    clipped_ratio = torch.clamp(ratio, 1 - cliprange, 1 + cliprange)
-    loss = torch.min(ratio * advantages, clipped_ratio * advantages)
-    return loss, {"loss": loss}
+    meta = {}
+    return -torch.min(v, v_clip), meta
 
 
 def compute_policy_gradient_loss(
@@ -152,7 +154,8 @@ def grpo_microbatch_train_step(
         cliprange=cliprange,
     )
 
-    loss = loss.mean() / gradient_accumulation_steps
+    loss = masked_mean(loss, response_mask)
+    loss = loss / gradient_accumulation_steps
     # Backpropagate the loss
     loss.backward()
 
