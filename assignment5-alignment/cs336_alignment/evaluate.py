@@ -6,6 +6,7 @@ from typing import Callable, List, Union
 from vllm import LLM, SamplingParams
 
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
+from cs336_alignment.utils import extract_reference_answer
 
 
 def load_and_format_prompts(data_path: str, prompt_path: str):
@@ -20,16 +21,6 @@ def load_and_format_prompts(data_path: str, prompt_path: str):
             answers.append(data["answer"])
 
     return prompts, answers
-
-
-ANS_RE = re.compile(r"####\s*([\-0-9\.\,]+)")
-
-
-def extract_reference_answer(answer: str) -> str:
-    match = ANS_RE.search(answer)
-    if match:
-        return match.group(1).strip().replace(",", "")
-    return "[invalid]"
 
 
 def run_vllm(vllm_model, prompts, sampling_params) -> List[str]:
