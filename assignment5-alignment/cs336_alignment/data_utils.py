@@ -3,6 +3,12 @@ import json
 import regex as re
 
 
+def wrap_prompt(text: str, prompt_path: str):
+    with open(prompt_path, "r") as file:
+        prompt = file.read()
+    return prompt.format(question=text)
+
+
 def extract_reference_answer(answer: str) -> str:
     ANS_RE = re.compile(r"####\s*([\-0-9\.\,]+)")
     match = ANS_RE.search(answer)
