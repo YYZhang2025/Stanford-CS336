@@ -1,36 +1,29 @@
 import logging
-import math
 import os
-import random
-from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from typing import Callable, List
 
 import dotenv
 import fire
 import torch
-import torch.nn as nn
 import wandb
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from vllm import LLM, SamplingParams
 
-from cs336_alignment.data_utils import extract_reference_answer, load_and_format_prompts
+from cs336_alignment.data_utils import load_and_format_prompts
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
 from cs336_alignment.evaluate import get_response
-from cs336_alignment.sft_utils import (
-    get_response_log_probs,
-    sft_microbatch_train_step,
-    tokenize_prompt_and_output,
-)
 from cs336_alignment.utils import (
     get_run_name,
-    print_rich_dict,
     save_model_and_tokenizer,
 )
 from cs336_alignment.vllm_utils import init_vllm, load_model_into_vllm_instance
+from train_sft import train_sft_model
 
 logging.getLogger("vllm").setLevel(logging.WARNING)
+
+from train_sft import evaluate_sft_model, log_generate
 
 
 @dataclass
@@ -69,18 +62,7 @@ class EvaluateConfig:
     max_tokens: int = 1024
 
 
-def make_sft_collate_fn(tokenizer):
-    def _collate(batch):
-        prompts, outputs, answers = zip(*batch)  # outputs can be ground-truth CoT or model generations
-        prompts = list(prompts)
-        outputs = list(outputs)
-        batch_enc = tokenize_prompt_and_output(prompts, outputs, tokenizer)
-        return {**batch_enc, "answers": answers}
-
-    return _collate
-
-
-class CustomDataset(Dataset):
+class EIDataset(Dataset):
     def __init__(self, train_prompts, train_cot, train_answers):
         self.train_prompts = train_prompts
         self.train_cot = train_cot
@@ -95,16 +77,6 @@ class CustomDataset(Dataset):
         answer = int(self.train_answers[idx].strip())
 
         return prompt, cot, answer
-
-
-def get_lr(it, max_lr, max_steps):
-    min_lr = max_lr * 0.1
-    if it >= max_steps:
-        return min_lr
-    # pure cosine decay
-    decay_ratio = it / max_steps
-    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
-    return min_lr + coeff * (max_lr - min_lr)
 
 
 @torch.no_grad()
@@ -138,145 +110,12 @@ def ei_collect_correct_pairs(
         # get_response returns a flat list for a single prompt with n samples
         # => length == samples_per_prompt
         for o in gens:
-            r = reward_fn(o, a)
+            r = reward_fn(o, str(a))
             if r.get("reward", 0) == 1:
                 kept_prompts.append(q)
                 kept_outputs.append(o)
 
     return kept_prompts, kept_outputs
-
-
-def run_sft_on_pairs(
-    model: nn.Module,
-    tokenizer,
-    prompts: List[str],
-    outputs: List[str],
-    *,
-    device: str,
-    grad_accum_steps: int,
-    optimizer: torch.optim.Optimizer,
-    mixed_precision: bool,
-) -> float:
-    """One pass of SFT over provided (prompt, output) pairs. Returns average loss."""
-    ds = CustomDataset(prompts, outputs, [0] * len(prompts))
-    dl = DataLoader(
-        dataset=ds,
-        batch_size=4,
-        shuffle=True,
-        num_workers=0,
-        pin_memory=True,
-        collate_fn=make_sft_collate_fn(tokenizer),
-    )
-    ctx = torch.autocast("cuda", dtype=torch.bfloat16) if mixed_precision else nullcontext()
-    total_loss = 0.0
-    micro = 0
-    for batch in dl:
-        input_ids = batch["input_ids"].to(device)
-        labels = batch["labels"].to(device)
-        response_mask = batch["response_mask"].to(device)
-        with ctx:
-            out = get_response_log_probs(model=model, input_ids=input_ids, labels=labels)
-            log_prob = out["log_probs"]
-            loss, _ = sft_microbatch_train_step(log_prob, response_mask, grad_accum_steps)
-        total_loss += float(loss)
-        micro += 1
-        if micro % grad_accum_steps == 0:
-            nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
-            optimizer.zero_grad()
-
-    return total_loss / max(1, micro)
-
-
-def log_generate(
-    vllm_model: LLM,
-    reward_fn: Callable[[str, str], dict[str, float]],
-    prompts: List[str],
-    cot: List[str],
-    answers: List[str],
-    eval_sampling_params: SamplingParams,
-    cur_step: int,
-    num_example=2,
-):
-    random_indices = random.sample(range(len(prompts)), k=num_example)
-    sampled_prompts = [prompts[i] for i in random_indices]
-    sampled_cot = [cot[i] for i in random_indices]
-    sampled_answers = [answers[i] for i in random_indices]
-
-    responses = get_response(vllm_model, sampled_prompts, eval_sampling_params)
-
-    for i in range(num_example):
-        response = responses[i]
-        answer = sampled_answers[i]
-        prompt = sampled_prompts[i]
-        extracted_answer = extract_reference_answer(response)
-        true_label = sampled_cot[i]
-
-        reward_dict = reward_fn(response, answer)
-
-        info_dict = {
-            "prompt": prompt,
-            "true_label": true_label,
-            "response": response,
-            "true_answer": answer,
-            "extracted_answer": extracted_answer,
-            **reward_dict,
-        }
-
-        print(f"======= Step: {cur_step}; Example {i} =======")
-        # print_formatted_dict(info_dict)
-        print_rich_dict(info_dict)
-        print("==============================================\n")
-
-
-def evaluate_vllm(
-    vllm_model: LLM,
-    reward_fn: Callable[[str, str], dict[str, float]],
-    prompts: List[str],
-    answers: List[str],
-    eval_sampling_params: SamplingParams,
-):
-    responses = get_response(vllm_model, prompts, eval_sampling_params)
-    allinfo_dict_list = []
-    for response, answer, prompt in zip(responses, answers, prompts):
-        # extracted_answer = extract_reference_answer(response)
-        reward_dict = reward_fn(response, answer)
-        allinfo_dict_list.append(reward_dict)
-
-    overview = {"correct": 0, "format_wrong": 0, "answer_wrong": 0, "count": 0}
-    for reward in allinfo_dict_list:
-        overview["count"] += 1
-        if reward["reward"] == 1:
-            overview["correct"] += 1
-        elif reward["format_reward"] == 1:
-            overview["answer_wrong"] += 1
-        else:
-            overview["format_wrong"] += 1
-
-    return overview
-
-
-def evaluate_sft_model(config: EvaluateConfig, vllm: LLM, eval_step: int):
-    prompts, cot, answers = load_and_format_prompts(config.data_path, config.prompt_path)
-
-    sampling_params = SamplingParams(
-        temperature=config.temperature,
-        top_p=config.top_p,
-        max_tokens=config.max_tokens,
-        stop=["</answer>"],
-        include_stop_str_in_output=True,
-    )
-
-    results = evaluate_vllm(vllm, r1_zero_reward_fn, prompts, answers, sampling_params)
-
-    wandb.log(
-        {
-            "eval/correct": results["correct"],
-            "eval/answer_wrong": results["answer_wrong"],
-            "eval/format_wrong": results["format_wrong"],
-            "eval_step": eval_step,
-        }
-    )
 
 
 def cycle_dataloader(dataloader):
@@ -324,7 +163,7 @@ def train_ei_model(
     print("[train] Optimizer initialized")
 
     # Base dataloader that provides (prompt, cot, answer); used only to sample questions/answers
-    base_ds = CustomDataset(train_prompts, train_cot, train_answers)
+    base_ds = EIDataset(train_prompts, train_cot, train_answers)
     base_dl = DataLoader(
         dataset=base_ds,
         batch_size=train_config.batch_size,
@@ -347,8 +186,8 @@ def train_ei_model(
         # (3) Sample a batch of questions Db from D
         # This batch will contain (prompt, cot, answer) tuples
         batch = next(cycled_dataloader)
-        q_batch = batch[0]
-        a_batch = batch[2]
+        question_batch = batch[0]
+        answer_batch = batch[2]
 
         # (4) Set old policy model pi_old <- pi_theta
         load_model_into_vllm_instance(model, vllm)
@@ -357,8 +196,8 @@ def train_ei_model(
         kept_prompts, kept_outputs = ei_collect_correct_pairs(
             vllm_model=vllm,
             reward_fn=r1_zero_reward_fn,
-            prompts=q_batch,
-            answers=a_batch,
+            prompts=question_batch,
+            answers=answer_batch,
             sampling_params=sampling_params,
             samples_per_prompt=train_config.samples_per_prompt,
         )
@@ -367,27 +206,22 @@ def train_ei_model(
             print(f"[EI] Step {step}: no correct generations; skipping SFT update.")
             continue
 
+        print(f"[EI] Step {step} | Pairs: {len(kept_prompts)}")
         # (8) pi_theta <- SFT(pi_theta, D_sft)
-        loss = run_sft_on_pairs(
-            model,
-            tokenizer,
-            kept_prompts,
-            kept_outputs,
-            device=train_config.train_device,
-            grad_accum_steps=train_config.gradient_accumulation_steps,
-            optimizer=optimizer,
-            mixed_precision=train_config.mixed_precision_training,
+        train_sft_model(
+            model=model,
+            tokenizer=tokenizer,
+            train_config=train_config,
+            eval_config=eval_config,
+            train_prompts=kept_prompts,
+            train_cot=kept_outputs,
+            train_answers=[0] * len(kept_prompts),  # Dummy answers, not used in SFT
+            vllm=vllm,
+            evaluate=False,  # No eval during EI training
         )
 
-        # Cosine LR schedule based on outer step count (optional)
-        adj_lr = get_lr(cur_step, train_config.learning_rate, train_config.n_ei_steps)
-        for pg in optimizer.param_groups:
-            pg["lr"] = adj_lr
-
-        print(f"[EI] Step {step} | Pairs: {len(kept_prompts)} | Loss: {loss:.4f} | LR: {adj_lr:.6f}")
-        wandb.log(
-            {"train/loss": loss, "train/pairs": len(kept_prompts), "train/lr": adj_lr, "train_step": cur_step}
-        )
+        print(f"[EI] Step {step} | Pairs: {len(kept_prompts)} ")
+        wandb.log({"train/pairs": len(kept_prompts), "train_step": cur_step})
         cur_step += 1
 
         # Periodic qualitative logging and eval
@@ -411,6 +245,7 @@ def train_ei_model(
             save_model_and_tokenizer(model, tokenizer, train_config)
             print(f"[eval] at step {step}")
             load_model_into_vllm_instance(model, vllm)
+
             evaluate_sft_model(eval_config, vllm, eval_step=cur_step)
             print(f"[eval] Evaluation completed for step {step}")
 

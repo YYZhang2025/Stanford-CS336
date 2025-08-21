@@ -41,11 +41,12 @@ class TrainConfig:
     data_path: str = "./data/gsm8k/train.jsonl"
     prompt_path: str = "./cs336_alignment/prompts/r1_zero.prompt"
 
-    batch_size: int = 2
+    batch_size: int = 4
     gradient_accumulation_steps: int = 16
-    training_steps: int = 256
+    training_steps: int = 512
     mixed_precision_training: bool = True
-    learning_rate: float = 2e-5
+    learning_rate: float = 5e-6
+    betas: tuple[float, float] = (0.9, 0.98)
     train_device: str = "cuda:0"
 
     num_example: int = 128
@@ -142,7 +143,7 @@ def log_generate(
         print(f"======= Step: {cur_step}; Example {i} =======")
         # print_formatted_dict(info_dict)
         print_rich_dict(info_dict)
-        print("==============================================")
+        print("==============================================\n")
 
 
 def evaluate_vllm(
@@ -196,7 +197,15 @@ def evaluate_sft_model(config: EvaluateConfig, vllm: LLM, eval_step: int):
 
 
 def train_sft_model(
-    train_config: TrainConfig, eval_config: EvaluateConfig, train_prompts, train_cot, train_answers, vllm: LLM
+    model,
+    tokenizer,
+    train_config: TrainConfig,
+    eval_config: EvaluateConfig,
+    train_prompts,
+    train_cot,
+    train_answers,
+    vllm: LLM,
+    evaluate: bool = True,
 ):
     wandb.init(
         entity=os.getenv("WANDB_ENTITY"),
@@ -212,19 +221,6 @@ def train_sft_model(
     wandb.define_metric("eval_step")
     wandb.define_metric("train/*", step_metric="train_step")
     wandb.define_metric("eval/*", step_metric="eval_step")
-
-    # ---------------------
-    # Load Model and tokenizer
-    # ---------------------
-    model = AutoModelForCausalLM.from_pretrained(
-        pretrained_model_name_or_path=train_config.model_name,
-        torch_dtype=torch.bfloat16,
-        attn_implementation="flash_attention_2",
-        device_map="cpu",
-    ).to(train_config.train_device)
-    tokenizer = AutoTokenizer.from_pretrained(train_config.model_name)
-    print(f"[train] Tokenizer {train_config.model_name} loaded")
-    print(f"[train] Model {train_config.model_name} loaded on {train_config.train_device}")
 
     # Data Preparation
     # ---------------------
@@ -251,10 +247,7 @@ def train_sft_model(
     # ---------------------
     # Optimizer
     # ---------------------
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=train_config.learning_rate,
-    )
+    optimizer = torch.optim.AdamW(model.parameters(), lr=train_config.learning_rate, betas=train_config.betas)
     print("[train] Optimizer initialized")
 
     # ---------------------
@@ -302,39 +295,39 @@ def train_sft_model(
                 batch_loss = 0
                 cur_step += 1
 
-            if (cur_step + 1) % train_config.log_print_steps == 0:
-                load_model_into_vllm_instance(model, vllm)
-                log_generate(
-                    vllm,
-                    reward_fn=r1_zero_reward_fn,
-                    prompts=dataset.train_prompts,
-                    cot=dataset.train_cot,
-                    answers=dataset.train_answers,
-                    eval_sampling_params=SamplingParams(
-                        temperature=eval_config.temperature,
-                        top_p=eval_config.top_p,
-                        max_tokens=eval_config.max_tokens,
-                        stop=["</answer>"],
-                        include_stop_str_in_output=True,
-                    ),
-                    cur_step=cur_step,
-                    num_example=3,
-                )
+                if (cur_step + 1) % train_config.log_print_steps == 0 and evaluate:
+                    load_model_into_vllm_instance(model, vllm)
+                    log_generate(
+                        vllm,
+                        reward_fn=r1_zero_reward_fn,
+                        prompts=dataset.train_prompts,
+                        cot=dataset.train_cot,
+                        answers=dataset.train_answers,
+                        eval_sampling_params=SamplingParams(
+                            temperature=eval_config.temperature,
+                            top_p=eval_config.top_p,
+                            max_tokens=eval_config.max_tokens,
+                            stop=["</answer>"],
+                            include_stop_str_in_output=True,
+                        ),
+                        cur_step=cur_step,
+                        num_example=3,
+                    )
 
-            if (cur_step + 1) % train_config.eval_interval_steps == 0:
-                print(
-                    f"[train] Step {cur_step}: saving model at {train_config.experiment_name}_{train_config.num_example}"
-                )
-                save_model_and_tokenizer(model, tokenizer, train_config)
+                if (cur_step + 1) % train_config.eval_interval_steps == 0 and evaluate:
+                    print(
+                        f"[train] Step {cur_step}: saving model at {train_config.experiment_name}_{train_config.num_example}"
+                    )
+                    save_model_and_tokenizer(model, tokenizer, train_config)
 
-                # Run evaluatoin
-                print(f"[eval] at step {cur_step}")
-                load_model_into_vllm_instance(model, vllm)
-                evaluate_sft_model(eval_config, vllm, eval_step=cur_step)
-                print(f"[eval] Evaluation completed for step {cur_step}")
+                    # Run evaluatoin
+                    print(f"[eval] at step {cur_step}")
+                    load_model_into_vllm_instance(model, vllm)
+                    evaluate_sft_model(eval_config, vllm, eval_step=cur_step)
+                    print(f"[eval] Evaluation completed for step {cur_step}")
 
-            if cur_step >= train_config.training_steps:
-                break
+                if cur_step >= train_config.training_steps:
+                    break
 
         if cur_step >= train_config.training_steps:
             break
@@ -367,9 +360,23 @@ def main(
     wandb.login(key=api_key)
 
     vllm = init_vllm(model_id=model_name, device=train_config.eval_device, seed=seed)
+
     prompts, cot, answers = load_and_format_prompts(train_config.data_path, train_config.prompt_path)
 
     for num_samples in [len(prompts)]:
+        # ---------------------
+        # Load Model and tokenizer
+        # ---------------------
+        model = AutoModelForCausalLM.from_pretrained(
+            pretrained_model_name_or_path=train_config.model_name,
+            torch_dtype=torch.bfloat16,
+            attn_implementation="flash_attention_2",
+            device_map="cpu",
+        ).to(train_config.train_device)
+        tokenizer = AutoTokenizer.from_pretrained(train_config.model_name)
+        print(f"[train] Tokenizer {train_config.model_name} loaded")
+        print(f"[train] Model {train_config.model_name} loaded on {train_config.train_device}")
+
         train_config.num_example = num_samples
 
         train_prompts = prompts[:num_samples]
@@ -377,6 +384,8 @@ def main(
         train_answers = answers[:num_samples]
 
         train_sft_model(
+            model,
+            tokenizer,
             train_config,
             eval_config=eval_config,
             train_prompts=train_prompts,
