@@ -1,9 +1,10 @@
 import logging
+import math
 import os
+import random
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from typing import Callable, List
-from unittest.mock import patch
 
 import dotenv
 import fire
@@ -11,9 +12,8 @@ import torch
 import torch.nn as nn
 import wandb
 from torch.utils.data import DataLoader, Dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from vllm import LLM, SamplingParams
-from vllm.model_executor import set_random_seed as vllm_set_random_seed
 
 from cs336_alignment.data_utils import extract_reference_answer, load_and_format_prompts
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
@@ -28,6 +28,8 @@ from cs336_alignment.utils import (
     print_rich_dict,
     save_model_and_tokenizer,
 )
+from cs336_alignment.vllm_utils import init_vllm, load_model_into_vllm_instance
+from tests.conftest import tokenizer
 
 logging.getLogger("vllm").setLevel(logging.WARNING)
 
@@ -77,12 +79,10 @@ def sft_collate_fn(batch, tokenizer):
 
 
 class SFTDataset(Dataset):
-    def __init__(self, train_prompts, train_cot, train_answers, tokenizer):
+    def __init__(self, train_prompts, train_cot, train_answers):
         self.train_prompts = train_prompts
         self.train_cot = train_cot
         self.train_answers = train_answers
-
-        self.tokenizer = tokenizer
 
     def __len__(self):
         return len(self.train_prompts)
@@ -95,57 +95,17 @@ class SFTDataset(Dataset):
         return prompt, cot, answer
 
 
-import math
-
-
 def get_lr(it, max_lr, max_steps):
     min_lr = max_lr * 0.1
-    warmup_steps = max_steps * 0.03
-    # 1) linear warmup for warmup_iters steps
-    if it < warmup_steps:
-        return max_lr * (it + 1) / warmup_steps
-    # 2) if it > lr_decay_iters, return min learning rate
-    if it > max_steps:
+    if it >= max_steps:
         return min_lr
-    # 3) in between, use cosine decay down to min learning rate
-    decay_ratio = (it - warmup_steps) / (max_steps - warmup_steps)
-    assert 0 <= decay_ratio <= 1
-    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))  # coeff starts at 1 and goes to 0
+    # pure cosine decay
+    decay_ratio = it / max_steps
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
     return min_lr + coeff * (max_lr - min_lr)
 
 
-def init_vllm(model_id: str, device: str, seed: int, gpu_memory_utilization: float = 0.85):
-    vllm_set_random_seed(seed)
-
-    world_size_patch = patch("torch.distributed.get_world_size", return_value=1)
-    profiling_patch = patch(
-        "vllm.worker.worker.Worker._assert_memory_footprint_increased_during_profiling", return_value=None
-    )
-    with world_size_patch, profiling_patch:
-        return LLM(
-            model=model_id,
-            device=device,
-            dtype=torch.bfloat16,
-            enable_prefix_caching=True,
-            gpu_memory_utilization=gpu_memory_utilization,
-        )
-
-
-def load_model_into_vllm_instance(model: torch.nn.Module, llm: LLM):
-    state_dict = model.state_dict()
-    llm_model = llm.llm_engine.model_executor.driver_worker.model_runner.model
-    llm_model.load_weights(state_dict.items())
-
-
-# def load_state_dict_into_vllm(state_dict: dict, llm: LLM):
-#     llm_model = llm.llm_engine.model_executor.driver_worker.model_runner.model
-#     llm_model.load_weights(state_dict.items())
-
-
-import random
-
-
-def random_generate(
+def log_generate(
     vllm_model: LLM,
     reward_fn: Callable[[str, str], dict[str, float]],
     prompts: List[str],
@@ -236,7 +196,7 @@ def evaluate_sft_model(config: EvaluateConfig, vllm: LLM, eval_step: int):
     )
 
 
-def train_sft_model(train_config: TrainConfig, eval_config: EvaluateConfig, dataset, vllm=None):
+def train_sft_model(train_config: TrainConfig, eval_config: EvaluateConfig, dataloader, vllm=None):
     wandb.init(
         entity=os.getenv("WANDB_ENTITY"),
         project="cs336-alignment-sft",
@@ -253,27 +213,15 @@ def train_sft_model(train_config: TrainConfig, eval_config: EvaluateConfig, data
     wandb.define_metric("eval/*", step_metric="eval_step")
 
     # ---------------------
-    # Load Model and Tokenizer
+    # Load Model
     # ---------------------
     model = AutoModelForCausalLM.from_pretrained(
         pretrained_model_name_or_path=train_config.model_name,
         torch_dtype=torch.bfloat16,
         attn_implementation="flash_attention_2",
-        device_map=None,
+        device_map="cpu",
     ).to(train_config.train_device)
     print(f"[train] Model {train_config.model_name} loaded on {train_config.train_device}")
-    tokenizer = AutoTokenizer.from_pretrained(train_config.model_name)
-    print("[train] Tokenizer loaded")
-
-    dataloader = DataLoader(
-        dataset=dataset,
-        batch_size=train_config.batch_size,
-        shuffle=True,
-        num_workers=4,
-        pin_memory=True,
-        collate_fn=lambda batch: sft_collate_fn(batch, tokenizer),
-    )
-    print(f"[train] Dataloader initialized with batch size {train_config.batch_size}")
 
     ctx = (
         nullcontext()
@@ -299,7 +247,6 @@ def train_sft_model(train_config: TrainConfig, eval_config: EvaluateConfig, data
     loss_accum = 0
     while True:
         for i, data in enumerate(dataloader):
-            #  {"input_ids": input_ids, "labels": labels, "response_mask": response_mask}
             input_ids = data["input_ids"].to(train_config.train_device)
             labels = data["labels"].to(train_config.train_device)
             response_mask = data["response_mask"].to(train_config.train_device)
@@ -307,7 +254,7 @@ def train_sft_model(train_config: TrainConfig, eval_config: EvaluateConfig, data
             with ctx:
                 log_prob = get_response_log_probs(model=model, input_ids=input_ids, labels=labels)
                 log_prob = log_prob["log_probs"]
-                loss, info = sft_microbatch_train_step(
+                loss, _ = sft_microbatch_train_step(
                     log_prob, response_mask, train_config.gradient_accumulation_steps
                 )
 
@@ -331,8 +278,10 @@ def train_sft_model(train_config: TrainConfig, eval_config: EvaluateConfig, data
                 (i + 1) % train_config.gradient_accumulation_steps == 0
                 and cur_step % train_config.log_print_steps == 0
             ):
+                # Update the vllm model before logging
+                torch.cuda.synchronize()
                 load_model_into_vllm_instance(model, vllm)
-                random_generate(
+                log_generate(
                     vllm,
                     reward_fn=r1_zero_reward_fn,
                     prompts=dataset.train_prompts,
@@ -385,10 +334,11 @@ def main(
     temperature: float = 1.0,
     top_p: float = 1.0,
     max_tokens: int = 1024,
+    seed: int = 42,
 ):
+    dotenv.load_dotenv()
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-    dotenv.load_dotenv()
     train_config = TrainConfig()
     eval_config = EvaluateConfig()
 
@@ -396,22 +346,29 @@ def main(
     api_key = os.getenv("WANDB_API_KEY")
     wandb.login(key=api_key)
 
+    vllm = init_vllm(model_id=model_name, device=train_config.eval_device, seed=seed)
     prompts, cot, answers = load_and_format_prompts(train_config.data_path, train_config.prompt_path)
-
-    vllm = init_vllm(
-        model_id=model_name, device=train_config.eval_device, seed=1234, gpu_memory_utilization=0.9
-    )
 
     for num_samples in ["all"]:
         train_config.num_example = num_samples if num_samples != "all" else len(prompts)
-        # train_dataset = all_datasets[:num_samples] if num_samples != "all" else all_datasets
         train_prompts = prompts[:num_samples] if num_samples != "all" else prompts
         train_cot = cot[:num_samples] if num_samples != "all" else cot
         train_answers = answers[:num_samples] if num_samples != "all" else answers
 
-        train_dataset = SFTDataset(train_prompts, train_cot, train_answers, tokenizer)
-        train_sft_model(train_config, eval_config=eval_config, dataset=train_dataset, vllm=vllm)
-        # train_sft_model(train_config, eval_config=eval_config, dataset=train_dataset)
+        train_dataset = SFTDataset(train_prompts, train_cot, train_answers)
+        tokenizer = AutoTokenizer.from_pretrained(train_config.model_name)
+        print("[train] Tokenizer loaded")
+        dataloader = DataLoader(
+            dataset=train_dataset,
+            batch_size=train_config.batch_size,
+            shuffle=True,
+            num_workers=4,
+            pin_memory=True,
+            collate_fn=lambda batch: sft_collate_fn(batch, tokenizer),
+        )
+        print(f"[train] Dataloader initialized with batch size {train_config.batch_size}")
+
+        train_sft_model(train_config, eval_config=eval_config, dataloader=dataloader, vllm=vllm)
 
     wandb.finish()
 

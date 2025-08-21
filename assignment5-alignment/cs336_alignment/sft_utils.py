@@ -49,14 +49,22 @@ def tokenize_prompt_and_output(
 
 
 def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
-    probs = F.softmax(logits, dim=-1)  # p(x)
+    # probs = F.softmax(logits, dim=-1)  # p(x)
     log_probs = F.log_softmax(logits, dim=-1)  # log p(x)
+    probs = torch.exp(log_probs)
+
     return -torch.sum(probs * log_probs, dim=-1)
 
 
 def get_response_log_probs(
     model: PreTrainedModel, input_ids: torch.Tensor, labels: torch.Tensor, return_token_entropy: bool = False
 ) -> dict[str, torch.Tensor]:
+    """
+    input: model, input_ids, labels
+    output: log_softmax(B S) and entropy(B S)
+    """
+
+    # (B, S, D)
     logits = model(input_ids).logits
 
     # First way
@@ -64,30 +72,40 @@ def get_response_log_probs(
     # cond_log_probs = log_probs.gather(-1, labels.unsqueeze(-1)).squeeze(-1)
 
     # Second way
-    nll = F.cross_entropy(
-        logits.view(-1, logits.size(-1)),  # (B*T, V)
-        labels.view(-1),  # (B*T,)
-        reduction="none",
-        ignore_index=-100,  # optional, if you mark pads as -100
-    ).view(labels.size())  # reshape back to (B, T)
+    # nll = F.cross_entropy(
+    #     logits.view(-1, logits.size(-1)),  # (B*T, V)
+    #     labels.view(-1),  # (B*T,)
+    #     reduction="none",
+    #     # ignore_index=-100,  # optional, if you mark pads as -100
+    # ).view(labels.size())  # reshape back to (B, T)
 
-    cond_log_probs = -nll  # convert NLL to log probs
+    # cond_log_probs = -nll  # convert NLL to log probs
+
+    # if return_token_entropy:
+    #     token_entropy = compute_entropy(logits)
+    #     return {"log_probs": cond_log_probs, "token_entropy": token_entropy}
+
+    # return {"log_probs": cond_log_probs}
+    log_softmax = F.log_softmax(logits)  # b s v
+    label_token_log_softmax = log_softmax.gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)  # b s
 
     if return_token_entropy:
-        token_entropy = compute_entropy(logits)
-        return {"log_probs": cond_log_probs, "token_entropy": token_entropy}
-
-    return {"log_probs": cond_log_probs}
+        entropy = compute_entropy(logits)
+        return {"log_probs": label_token_log_softmax, "token_entropy": entropy}
+    else:
+        return {"log_probs": label_token_log_softmax}
 
 
 def masked_normalize(
-    tensor: torch.Tensor, mask: torch.Tensor, normalize_constant: float = 1.0, dim: int | None = None
+    tensor: torch.Tensor, mask: torch.Tensor, normalize_constant: float = 1.0, dim: int = -1
 ) -> torch.Tensor:
     assert normalize_constant != 0, "Normalization constant must not be zero"
 
-    masked_tensor = tensor * mask
-    summed = masked_tensor.sum(dim=dim) if dim is not None else masked_tensor.sum()
-    return summed / normalize_constant
+    # masked_tensor = tensor * mask
+    # summed = masked_tensor.sum(dim=dim) if dim is not None else masked_tensor.sum()
+    # return summed / normalize_constant
+    masked_tensor = torch.where(mask, tensor, torch.zeros_like(tensor))  # b s v
+    return torch.sum(masked_tensor, dim=dim) / normalize_constant
 
 
 def sft_microbatch_train_step(
@@ -107,7 +125,9 @@ def sft_microbatch_train_step(
     loss = masked_normalize(policy_log_probs, response_mask, normalize_constant)
 
     # average of the loss and scale by gradient accumulation steps
-    loss = -loss / policy_log_probs.shape[0] / gradient_accumulation_steps
+    # loss = -loss / policy_log_probs.shape[0] / gradient_accumulation_steps
+    loss = -loss.mean()
+    loss = loss / gradient_accumulation_steps
 
     # Backprop for this microbatch
     loss.backward()

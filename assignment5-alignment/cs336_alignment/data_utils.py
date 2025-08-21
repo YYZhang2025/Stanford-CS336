@@ -66,7 +66,7 @@ def wrap_prompt(text: str, prompt_path: str):
     return prompt.format(question=text)
 
 
-def load_and_format_prompts(data_path: str, prompt_path: str):
+def load_and_format_prompts(data_path: str, prompt_path: str) -> tuple[list[str], list[str], list[str]]:
     with open(prompt_path, "r") as file:
         prompt = file.read()
 
