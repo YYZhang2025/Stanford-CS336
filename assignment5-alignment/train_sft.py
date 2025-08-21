@@ -3,7 +3,7 @@ import os
 import time
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
-from typing import List, Optional
+from typing import Optional
 from unittest.mock import patch
 
 import dotenv
@@ -22,7 +22,7 @@ from cs336_alignment.sft_utils import (
     sft_microbatch_train_step,
     tokenize_prompt_and_output,
 )
-from cs336_alignment.utils import get_run_name, load_json_to_list
+from cs336_alignment.utils import get_run_name
 
 
 @dataclass
@@ -49,9 +49,6 @@ class EvaluateConfig:
     temperature: float = 1.0
     top_p: float = 1.0
     max_tokens: int = 1024
-
-
-from torch.utils.data import DataLoader
 
 
 def sft_collate_fn(batch, tokenizer):
@@ -177,6 +174,7 @@ def eval_worker(
         resume="allow",
         reinit=True,
     )
+    print("[eval] Evaluation worker started...")
 
     # vLLM on eval GPU
     vllm = init_vllm(model_id=model_name, device=device, seed=1234, gpu_memory_utilization=0.85)
@@ -199,11 +197,13 @@ def eval_worker(
             time.sleep(2.0)
             continue
 
+        print(f"[eval] Loading checkpoint from {ckpt_path} at step {step}")
         payload = torch.load(ckpt_path, map_location="cpu")
         step = int(payload.get("step", last_step))
         state_dict = payload["state_dict"]
         load_state_dict_into_vllm(state_dict, vllm)
         evaluate_sft_model(local_eval_cfg, vllm, eval_step=step)
+        print(f"[eval] Evaluation completed for step {step}")
         last_step = step
 
         # small sleep to avoid hot loop
@@ -243,6 +243,7 @@ def train_sft_model(train_config: TrainConfig, eval_config: EvaluateConfig, data
         daemon=True,
     )
     eval_proc.start()
+    print("[train] Async evaluation process started...")
 
     # ---------------------
     # Load Model and Tokenizer
@@ -253,7 +254,9 @@ def train_sft_model(train_config: TrainConfig, eval_config: EvaluateConfig, data
         attn_implementation="flash_attention_2",
         device_map=None,
     ).to(train_config.train_device)
+    print(f"[train] Model {train_config.model_name} loaded on {train_config.train_device}")
     tokenizer = AutoTokenizer.from_pretrained(train_config.model_name)
+    print("[train] Tokenizer loaded")
 
     dataloader = torch.utils.data.DataLoader(
         dataset=dataset,
@@ -263,6 +266,7 @@ def train_sft_model(train_config: TrainConfig, eval_config: EvaluateConfig, data
         pin_memory=True,
         collate_fn=lambda batch: sft_collate_fn(batch, tokenizer),
     )
+    print(f"[train] Dataloader initialized with batch size {train_config.batch_size}")
 
     ctx = (
         nullcontext()
@@ -279,6 +283,7 @@ def train_sft_model(train_config: TrainConfig, eval_config: EvaluateConfig, data
         betas=(0.9, 0.95),
         weight_decay=0.1,
     )
+    print("[train] Optimizer initialized")
 
     # ---------------------
     # Training Process
@@ -298,6 +303,7 @@ def train_sft_model(train_config: TrainConfig, eval_config: EvaluateConfig, data
                     log_prob, response_mask, train_config.gradient_accumulation_steps
                 )
 
+            print(f"[train] Step {cur_step} | Loss: {loss.item():.4f}")
             wandb.log({"train/loss": loss.item(), "train_step": cur_step})
             cur_step += 1
 
@@ -308,6 +314,7 @@ def train_sft_model(train_config: TrainConfig, eval_config: EvaluateConfig, data
             # Async eval: checkpoint every N steps; eval_worker will pick it up
             if cur_step % train_config.eval_interval_steps == 0:
                 _atomic_save_checkpoint(model, train_config.ckpt_dir, cur_step)
+                print(f"[train] Saved checkpoint at step {cur_step}")
 
             if cur_step >= train_config.training_steps:
                 break
@@ -316,6 +323,7 @@ def train_sft_model(train_config: TrainConfig, eval_config: EvaluateConfig, data
             break
 
     _atomic_save_checkpoint(model, train_config.ckpt_dir, cur_step)
+    print(f"[train] Training finished at step {cur_step}")
     wandb.finish()
     return model
 
