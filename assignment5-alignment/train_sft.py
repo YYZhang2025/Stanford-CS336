@@ -53,19 +53,21 @@ class EvaluateConfig:
 
 def sft_collate_fn(batch, tokenizer):
     # unpack batch
-    prompts, answers = zip(*batch)  # each is a tuple of strings
+    prompts, cot, answers = zip(*batch)  # each is a tuple of strings
     prompts = list(prompts)
+    cot = list(cot)
     answers = list(answers)
 
     # tokenize and prepare tensors
-    batch_enc = tokenize_prompt_and_output(prompts, answers, tokenizer)
+    batch_enc = tokenize_prompt_and_output(prompts, cot, tokenizer)
 
-    return batch_enc
+    return {**batch_enc, "answers": torch.stack(answers)}
 
 
 class SFTDataset(Dataset):
-    def __init__(self, train_prompts, train_answers, tokenizer):
+    def __init__(self, train_prompts, train_cot, train_answers, tokenizer):
         self.train_prompts = train_prompts
+        self.train_cot = train_cot
         self.train_answers = train_answers
 
         self.tokenizer = tokenizer
@@ -73,11 +75,12 @@ class SFTDataset(Dataset):
     def __len__(self):
         return len(self.train_prompts)
 
-    def __getitem__(self, idx: int) -> tuple[str, str]:
+    def __getitem__(self, idx: int) -> tuple[str, str, str]:
         prompt = self.train_prompts[idx]
+        cot = self.train_cot[idx]
         answer = self.train_answers[idx]
 
-        return prompt, answer
+        return prompt, cot, answer
 
 
 def init_vllm(model_id: str, device: str, seed: int, gpu_memory_utilization: float = 0.85):
@@ -107,6 +110,33 @@ def load_state_dict_into_vllm(state_dict: dict, llm: LLM):
     llm_model.load_weights(state_dict.items())
 
 
+# def evaluate_vllm(
+#     vllm_model: LLM,
+#     reward_fn: Callable[[str, str], dict[str, float]],
+#     prompts: List[str],
+#     cot: List[str],
+#     true_answers: List[str],
+#     eval_sampling_params: SamplingParams,
+# ):
+#     responses = get_response(vllm_model, prompts, eval_sampling_params)
+#     allinfo_dict_list = []
+#     for response, true_answer, prompt in zip(responses, true_answers, prompts):
+#         extracted_answer = extract_reference_answer(response)
+#         reward_dict = reward_fn(response, true_answer)
+
+#         info_dict: dict[str, Union[str, float]] = {
+#             "prompt": prompt,
+#             "response": response,
+#             "true_answer": true_answer,
+#             "extracted_answer": extracted_answer,
+#             **reward_dict,
+#         }
+
+#         allinfo_dict_list.append(info_dict)
+
+#     return allinfo_dict_list
+
+
 def evaluate_vllm(
     vllm_model: LLM,
     reward_fn: Callable[[str, str], dict[str, float]],
@@ -117,12 +147,11 @@ def evaluate_vllm(
     responses = run_vllm(vllm_model, prompts, eval_sampling_params)
     allinfo_dict_list = []
     for response, answer, prompt in zip(responses, answers, prompts):
-        extracted_answer = extract_reference_answer(answer)
-        reward_dict = reward_fn(response, extracted_answer)
+        # extracted_answer = extract_reference_answer(response)
+        reward_dict = reward_fn(response, answer)
         allinfo_dict_list.append(reward_dict)
 
     overview = {"correct": 0, "format_wrong": 0, "answer_wrong": 0, "count": 0}
-
     for reward in allinfo_dict_list:
         overview["count"] += 1
         if reward["reward"] == 1:
@@ -136,7 +165,7 @@ def evaluate_vllm(
 
 
 def evaluate_sft_model(config: EvaluateConfig, vllm: LLM, eval_step: int):
-    prompts, answers = load_and_format_prompts(config.data_path, config.prompt_path)
+    prompts, cot, answers = load_and_format_prompts(config.data_path, config.prompt_path)
 
     sampling_params = SamplingParams(
         temperature=config.temperature,
@@ -291,7 +320,7 @@ def main(
     wandb.login(key=api_key)
 
     tokenizer = AutoTokenizer.from_pretrained(train_config.model_name)
-    prompts, answers = load_and_format_prompts(train_config.data_path, train_config.prompt_path)
+    prompts, cot, answers = load_and_format_prompts(train_config.data_path, train_config.prompt_path)
 
     vllm = init_vllm(
         model_id=model_name, device=train_config.eval_device, seed=1234, gpu_memory_utilization=0.85
@@ -301,9 +330,10 @@ def main(
         train_config.num_example = num_samples if num_samples != "all" else len(prompts)
         # train_dataset = all_datasets[:num_samples] if num_samples != "all" else all_datasets
         train_prompts = prompts[:num_samples] if num_samples != "all" else prompts
+        train_cot = cot[:num_samples] if num_samples != "all" else cot
         train_answers = answers[:num_samples] if num_samples != "all" else answers
 
-        train_dataset = SFTDataset(train_prompts, train_answers, tokenizer)
+        train_dataset = SFTDataset(train_prompts, train_cot, train_answers, tokenizer)
         train_sft_model(train_config, eval_config=eval_config, dataset=train_dataset, vllm=vllm)
         # train_sft_model(train_config, eval_config=eval_config, dataset=train_dataset)
 
