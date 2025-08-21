@@ -30,20 +30,20 @@ def convert_cot_to_think_answer(text: str) -> str:
     if m:
         ans = m.group(1).strip()
         prefix = text[: m.start()].rstrip()
-        return f"{prefix} </think> <answer> {ans} </answer>"
+        return f"{prefix} </think> <answer>{ans}</answer>"
 
     # Fallback: try to capture a trailing number at end of text
     m_num = re.search(r"(-?\d+(?:\.\d+)?)\s*$", text)
     if m_num:
         ans = m_num.group(1)
         prefix = text[: m_num.start()].rstrip()
-        return f"{prefix} </think> <answer> {ans} </answer>"
+        return f"{prefix} </think> <answer>{ans}</answer>"
 
     return text
 
 
 def extract_reference_answer(response: str) -> str:
-    from drgrpo_grader import extract_answer
+    from cs336_alignment.drgrpo_grader import extract_answer
 
     model_answer = response.split("<answer>")[-1].replace("</answer>", "")
     if "\\boxed" in model_answer:

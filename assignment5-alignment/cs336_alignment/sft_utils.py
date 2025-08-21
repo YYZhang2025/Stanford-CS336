@@ -3,42 +3,49 @@ import torch.nn.functional as F
 from transformers import PreTrainedModel, PreTrainedTokenizerBase
 
 
-def tokenize_prompt_and_output(prompt_strs, output_strs, tokenizer: PreTrainedTokenizerBase):
-    assert len(prompt_strs) == len(output_strs), "Prompt and output lists must have the same length"
+def tokenize_prompt_and_output(
+    prompt_strs: list[str], output_strs: list[str], tokenizer: PreTrainedTokenizerBase
+) -> dict[str, torch.Tensor]:
+    prompt_input_ids = []
+    output_input_ids = []
 
-    pad_id = tokenizer.pad_token_id or tokenizer.eos_token_id or 0
+    for prompt in prompt_strs:
+        tokens = tokenizer.encode(prompt, add_special_tokens=False)
+        prompt_input_ids.append(torch.tensor(tokens))
+    for output in output_strs:
+        tokens = tokenizer.encode(output, add_special_tokens=False)
+        output_input_ids.append(torch.tensor(tokens))
 
-    # Tokenize separately (no padding yet)
-    prompt_enc = tokenizer(prompt_strs, padding=False, add_special_tokens=False)["input_ids"]
-    output_enc = tokenizer(output_strs, padding=False, add_special_tokens=False)["input_ids"]
+    seq_lengths = [len(p_ids) + len(o_ids) for p_ids, o_ids in zip(prompt_input_ids, output_input_ids)]
+    max_length = max(seq_lengths)
 
-    # Concatenate and record lengths
-    concat_ids = []
-    prompt_lens = []
-    for p_ids, o_ids in zip(prompt_enc, output_enc):
-        concat_ids.append(p_ids + o_ids)  # EOS at the end of each output
-        prompt_lens.append(len(p_ids))
+    concatenated_input_ids = []
+    concatenated_labels = []
+    response_masks = []
 
-    # Find max length, then subtract 1 for shift
-    T = max(len(seq) for seq in concat_ids) - 1
-    B = len(concat_ids)
+    for (
+        p_ids,
+        o_ids,
+    ) in zip(prompt_input_ids, output_input_ids):
+        input_ids = torch.cat([p_ids, o_ids], dim=0)
+        response_mask = torch.cat(
+            [torch.zeros_like(p_ids, dtype=torch.bool), torch.ones_like(o_ids, dtype=torch.bool)], dim=0
+        )
+        pad_length = max_length - input_ids.shape[0]
+        padded_input_ids = torch.nn.functional.pad(input_ids, (0, pad_length), value=tokenizer.pad_token_id)
+        padded_response_mask = torch.nn.functional.pad(response_mask, (0, pad_length), value=False)
 
-    # Prepare tensors
-    input_ids = torch.full((B, T), pad_id, dtype=torch.long)
-    labels = torch.full((B, T), pad_id, dtype=torch.long)
-    response_mask = torch.zeros((B, T), dtype=torch.long)
+        concatenated_input_ids.append(padded_input_ids[:-1])
+        concatenated_labels.append(padded_input_ids[1:])
+        response_masks.append(
+            padded_response_mask[1:]
+        )  ### set prompt and padding to be false, will not calculate loss
 
-    for i, (seq, prompt) in enumerate(zip(concat_ids, prompt_lens)):
-        inp = seq[:-1] if len(seq) == (T + 1) else seq[:]  # Input
-        n = len(inp)
-        input_ids[i, :n] = torch.tensor(inp, dtype=torch.long)
+    input_ids_tensor = torch.stack(concatenated_input_ids)
+    label_tensor = torch.stack(concatenated_labels)
+    response_mask_tensor = torch.stack(response_masks)
 
-        lab = seq[1:]  # Label
-        n = len(lab)
-        labels[i, :n] = torch.tensor(lab, dtype=torch.long)
-        response_mask[i, max(prompt - 1, 0) : n] = 1  # mark only response tokens
-
-    return {"input_ids": input_ids, "labels": labels, "response_mask": response_mask}
+    return {"input_ids": input_ids_tensor, "labels": label_tensor, "response_mask": response_mask_tensor}
 
 
 def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
