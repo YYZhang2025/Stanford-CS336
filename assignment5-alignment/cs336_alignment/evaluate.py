@@ -6,7 +6,7 @@ from typing import Callable, List, Union
 from vllm import LLM, SamplingParams
 
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
-from cs336_alignment.utils import extract_reference_answer
+from cs336_alignment.utils import extract_reference_answer, safe_slug
 
 
 def load_and_format_prompts(data_path: str, prompt_path: str):
@@ -55,56 +55,27 @@ def evaluate_vllm(
     return allinfo_dict_list
 
 
-def parse_args():
-    parse_args = argparse.ArgumentParser(description="Evaluate VLLM model with prompts.")
+import os
+from pathlib import Path
 
-    parse_args.add_argument(
-        "--model_name",
-        type=str,
-        default="Qwen/Qwen2.5-Math-1.5B",
-        required=True,
-        help="Name of the VLLM model.",
-    )
-    parse_args.add_argument(
-        "--data_path",
-        type=str,
-        default="./data/gsm8k/test.jsonl",
-        required=True,
-        help="Path to the reward function.",
-    )
-    parse_args.add_argument(
-        "--prompt_path",
-        type=str,
-        default="./prompts/r1_zero.prompt",
-        required=True,
-        help="Path to the prompt template file.",
-    )
-    parse_args.add_argument(
-        "--temperature", type=float, default=1.0, help="Sampling temperature for the model."
-    )
-    parse_args.add_argument(
-        "--top_p", type=float, default=1.0, help="Top-p sampling parameter for the model."
-    )
-    parse_args.add_argument(
-        "--max_tokens", type=int, default=1024, help="Maximum number of tokens to generate."
-    )
-
-    return parse_args.parse_args()
+import fire
 
 
-def main():
-    args = parse_args()
-
-    model_name = args.model_name
-    data_path = args.data_path
-    prompt_path = args.prompt_path
-
+def main(
+    *,
+    model_name: str = "Qwen/Qwen2.5-Math-1.5B",
+    data_path: str = "./data/gsm8k/test.jsonl",
+    prompt_path: str = "./cs336_alignment/prompts/r1_zero.prompt",
+    temperature: float = 1.0,
+    top_p: float = 1.0,
+    max_tokens: int = 1024,
+):
     vllm_model = LLM(model_name)
 
     sampling_params = SamplingParams(
-        temperature=args.temperature,
-        top_p=args.top_p,
-        max_tokens=args.max_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
         stop=["</answer>"],
         include_stop_str_in_output=True,
     )
@@ -112,11 +83,20 @@ def main():
     prompts, answers = load_and_format_prompts(data_path, prompt_path)
 
     results = evaluate_vllm(vllm_model, r1_zero_reward_fn, prompts, answers, sampling_params)
-    with open(f"evaluate_{model_name}_{data_path.split('/')[-1]}.jsonl", "w") as f:
+
+    model_tag = safe_slug(model_name)
+    data_stem = Path(data_path).stem
+    out_dir = Path("evaluations")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / f"evaluate_{model_tag}_{data_stem}.jsonl"
+
+    with open(out_file, "w", encoding="utf-8") as f:
         for i in results:
             json.dump(i, f)
             f.write("\n")
 
+    print(f"Wrote {out_file}")
+
 
 if __name__ == "__main__":
-    main()
+    fire.Fire(main)
