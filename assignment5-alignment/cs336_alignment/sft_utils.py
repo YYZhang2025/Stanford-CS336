@@ -6,6 +6,9 @@ from transformers import PreTrainedModel, PreTrainedTokenizerBase
 def tokenize_prompt_and_output(
     prompt_strs: list[str], output_strs: list[str], tokenizer: PreTrainedTokenizerBase
 ) -> dict[str, torch.Tensor]:
+    # 151643 for Qwen/Qwen2.5-Math-1.5B
+    pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else -100
+
     prompt_input_ids = []
     output_input_ids = []
 
@@ -17,6 +20,7 @@ def tokenize_prompt_and_output(
         output_input_ids.append(torch.tensor(tokens))
 
     seq_lengths = [len(p_ids) + len(o_ids) for p_ids, o_ids in zip(prompt_input_ids, output_input_ids)]
+    # Pad to max length
     max_length = max(seq_lengths)
 
     concatenated_input_ids = []
@@ -28,12 +32,11 @@ def tokenize_prompt_and_output(
         o_ids,
     ) in zip(prompt_input_ids, output_input_ids):
         input_ids = torch.cat([p_ids, o_ids], dim=0)
-        response_mask = torch.cat(
-            [torch.zeros_like(p_ids, dtype=torch.bool), torch.ones_like(o_ids, dtype=torch.bool)], dim=0
-        )
         pad_length = max_length - input_ids.shape[0]
-        padded_input_ids = torch.nn.functional.pad(input_ids, (0, pad_length), value=tokenizer.pad_token_id)
-        padded_response_mask = torch.nn.functional.pad(response_mask, (0, pad_length), value=False)
+        padded_input_ids = F.pad(input_ids, (-1, pad_length), value=pad_token_id)
+
+        response_mask = torch.cat([torch.zeros_like(p_ids).bool(), torch.ones_like(o_ids).bool()], dim=0)
+        padded_response_mask = F.pad(response_mask, (-1, pad_length), value=False)
 
         concatenated_input_ids.append(padded_input_ids[:-1])
         concatenated_labels.append(padded_input_ids[1:])
@@ -49,7 +52,7 @@ def tokenize_prompt_and_output(
 
 
 def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
-    # probs = F.softmax(logits, dim=-1)  # p(x)
+    # logits has shape: (B, S, V)
     log_probs = F.log_softmax(logits, dim=-1)  # log p(x)
     probs = torch.exp(log_probs)
 
@@ -60,11 +63,14 @@ def get_response_log_probs(
     model: PreTrainedModel, input_ids: torch.Tensor, labels: torch.Tensor, return_token_entropy: bool = False
 ) -> dict[str, torch.Tensor]:
     """
-    input: model, input_ids, labels
+    input:
+        - model,
+        - input_ids: (B, S)
+        - labels: (B, S)
     output: log_softmax(B S) and entropy(B S)
     """
 
-    # (B, S, D)
+    # (B, S, V)
     logits = model(input_ids).logits
 
     # First way
@@ -86,8 +92,8 @@ def get_response_log_probs(
     #     return {"log_probs": cond_log_probs, "token_entropy": token_entropy}
 
     # return {"log_probs": cond_log_probs}
-    log_softmax = F.log_softmax(logits, dim=-1)  # b s v
-    label_token_log_softmax = log_softmax.gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)  # b s
+    log_prob = F.log_softmax(logits, dim=-1)  # B, S, V
+    label_token_log_softmax = log_prob.gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)  # B, S
 
     if return_token_entropy:
         entropy = compute_entropy(logits)
@@ -101,10 +107,7 @@ def masked_normalize(
 ) -> torch.Tensor:
     assert normalize_constant != 0, "Normalization constant must not be zero"
 
-    # masked_tensor = tensor * mask
-    # summed = masked_tensor.sum(dim=dim) if dim is not None else masked_tensor.sum()
-    # return summed / normalize_constant
-    masked_tensor = torch.where(mask, tensor, torch.zeros_like(tensor))  # b s v
+    masked_tensor = torch.where(mask, tensor, torch.zeros_like(tensor))
     return torch.sum(masked_tensor, dim=dim) / normalize_constant
 
 
@@ -114,6 +117,18 @@ def sft_microbatch_train_step(
     gradient_accumulation_steps: int,
     normalize_constant: float = 1.0,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Perform a training step on a microbatch of data.
+
+    Args:
+        policy_log_probs (torch.Tensor): (B, S)
+        response_mask (torch.Tensor): (B, S)
+        gradient_accumulation_steps (int): The number of gradient accumulation steps.
+        normalize_constant (float, optional): The normalization constant. Defaults to 1.0.
+
+    Returns:
+        tuple[torch.Tensor, dict[str, torch.Tensor]]: The loss and metadata.
+    """
+
     assert gradient_accumulation_steps > 0, "Gradient accumulation steps must be positive"
     assert policy_log_probs.shape == response_mask.shape, (
         "policy_log_probs and response_mask must have same shape"
@@ -122,11 +137,10 @@ def sft_microbatch_train_step(
     # Create loss
     # One thing to notice is that, the loss return by the masked_normalize function is
     # NOT averaged over the batch
-    loss = masked_normalize(policy_log_probs, response_mask, normalize_constant)
+    raw_loss = masked_normalize(policy_log_probs, response_mask, normalize_constant, dim=-1)
 
     # average of the loss and scale by gradient accumulation steps
-    # loss = -loss / policy_log_probs.shape[0] / gradient_accumulation_steps
-    loss = -loss.mean()
+    loss = -raw_loss.mean()
     loss = loss / gradient_accumulation_steps
 
     # Backprop for this microbatch

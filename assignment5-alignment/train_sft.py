@@ -29,7 +29,6 @@ from cs336_alignment.utils import (
     save_model_and_tokenizer,
 )
 from cs336_alignment.vllm_utils import init_vllm, load_model_into_vllm_instance
-from tests.conftest import tokenizer
 
 logging.getLogger("vllm").setLevel(logging.WARNING)
 
@@ -196,7 +195,9 @@ def evaluate_sft_model(config: EvaluateConfig, vllm: LLM, eval_step: int):
     )
 
 
-def train_sft_model(train_config: TrainConfig, eval_config: EvaluateConfig, dataset, dataloader, vllm=None):
+def train_sft_model(
+    train_config: TrainConfig, eval_config: EvaluateConfig, train_prompts, train_cot, train_answers, vllm: LLM
+):
     wandb.init(
         entity=os.getenv("WANDB_ENTITY"),
         project="cs336-alignment-sft",
@@ -213,7 +214,7 @@ def train_sft_model(train_config: TrainConfig, eval_config: EvaluateConfig, data
     wandb.define_metric("eval/*", step_metric="eval_step")
 
     # ---------------------
-    # Load Model
+    # Load Model and tokenizer
     # ---------------------
     model = AutoModelForCausalLM.from_pretrained(
         pretrained_model_name_or_path=train_config.model_name,
@@ -221,12 +222,30 @@ def train_sft_model(train_config: TrainConfig, eval_config: EvaluateConfig, data
         attn_implementation="flash_attention_2",
         device_map="cpu",
     ).to(train_config.train_device)
+    tokenizer = AutoTokenizer.from_pretrained(train_config.model_name)
+    print(f"[train] Tokenizer {train_config.model_name} loaded")
     print(f"[train] Model {train_config.model_name} loaded on {train_config.train_device}")
 
+    # Data Preparation
+    # ---------------------
+    dataset = SFTDataset(train_prompts, train_cot, train_answers)
+    dataloader = DataLoader(
+        dataset=dataset,
+        batch_size=train_config.batch_size,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True,
+        collate_fn=lambda batch: sft_collate_fn(batch, tokenizer),
+    )
+    print(f"[train] Dataloader initialized with batch size {train_config.batch_size}")
+
+    # ---------------------
+    # Mixed Precision Context
+    # ---------------------
     ctx = (
-        nullcontext()
+        torch.autocast("cuda", dtype=torch.bfloat16)
         if train_config.mixed_precision_training
-        else torch.autocast("cuda", dtype=torch.bfloat16)
+        else nullcontext()
     )
 
     # ---------------------
@@ -235,18 +254,18 @@ def train_sft_model(train_config: TrainConfig, eval_config: EvaluateConfig, data
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=train_config.learning_rate,
-        betas=(0.9, 0.95),
-        weight_decay=0.1,
     )
     print("[train] Optimizer initialized")
 
     # ---------------------
     # Training Process
     # ---------------------
-    cur_step = 0
-    loss_accum = 0
+    cur_step = 0  # Initialize current step
+    batch_loss = 0
+    total_micro_steps = 0
     while True:
         for i, data in enumerate(dataloader):
+            total_micro_steps += 1
             input_ids = data["input_ids"].to(train_config.train_device)
             labels = data["labels"].to(train_config.train_device)
             response_mask = data["response_mask"].to(train_config.train_device)
@@ -258,8 +277,8 @@ def train_sft_model(train_config: TrainConfig, eval_config: EvaluateConfig, data
                     log_prob, response_mask, train_config.gradient_accumulation_steps
                 )
 
-            loss_accum += loss
-            if (i + 1) % train_config.gradient_accumulation_steps == 0:
+            batch_loss += loss
+            if total_micro_steps % train_config.gradient_accumulation_steps == 0:
                 nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 adj_lr = get_lr(cur_step, train_config.learning_rate, train_config.training_steps)
                 for param_group in optimizer.param_groups:
@@ -269,23 +288,21 @@ def train_sft_model(train_config: TrainConfig, eval_config: EvaluateConfig, data
                 optimizer.zero_grad()
 
                 print(
-                    f"[train] Step {cur_step} | Loss: {loss_accum / train_config.gradient_accumulation_steps:.4f} | LR: {adj_lr:.6f}"
+                    f"[train] Step {cur_step} | Loss: {batch_loss / train_config.gradient_accumulation_steps:.4f} | LR: {adj_lr:.6f}"
                 )
 
                 wandb.log(
                     {
-                        "train/loss": loss_accum / train_config.gradient_accumulation_steps,
+                        "train/loss": batch_loss / train_config.gradient_accumulation_steps,
                         "train/lr": adj_lr,
                         "train_step": cur_step,
                     }
                 )
-                loss_accum = 0
+
+                batch_loss = 0
                 cur_step += 1
 
-            if (
-                (i + 1) % train_config.gradient_accumulation_steps == 0
-                and cur_step % train_config.log_print_steps == 0
-            ):
+            if (cur_step + 1) % train_config.log_print_steps == 0:
                 load_model_into_vllm_instance(model, vllm)
                 log_generate(
                     vllm,
@@ -304,14 +321,11 @@ def train_sft_model(train_config: TrainConfig, eval_config: EvaluateConfig, data
                     num_example=3,
                 )
 
-            if (
-                (i + 1) % train_config.gradient_accumulation_steps == 0
-                and cur_step % train_config.eval_interval_steps == 0
-            ):
-                print(f"[train] Step {cur_step}: saving model at {train_config.experiment_name}")
-                save_model_and_tokenizer(
-                    model, tokenizer, f"{train_config.experiment_name}_{train_config.num_example}"
+            if (cur_step + 1) % train_config.eval_interval_steps == 0:
+                print(
+                    f"[train] Step {cur_step}: saving model at {train_config.experiment_name}_{train_config.num_example}"
                 )
+                save_model_and_tokenizer(model, tokenizer, train_config)
 
                 # Run evaluatoin
                 print(f"[eval] at step {cur_step}")
@@ -325,7 +339,7 @@ def train_sft_model(train_config: TrainConfig, eval_config: EvaluateConfig, data
         if cur_step >= train_config.training_steps:
             break
 
-    save_model_and_tokenizer(model, tokenizer, f"{train_config.experiment_name}_{train_config.num_example}")
+    save_model_and_tokenizer(model, tokenizer, train_config)
     print(f"[train] Training finished at step {cur_step}")
 
     wandb.finish()
@@ -355,27 +369,20 @@ def main(
     vllm = init_vllm(model_id=model_name, device=train_config.eval_device, seed=seed)
     prompts, cot, answers = load_and_format_prompts(train_config.data_path, train_config.prompt_path)
 
-    for num_samples in ["all"]:
-        train_config.num_example = num_samples if num_samples != "all" else len(prompts)
-        train_prompts = prompts[:num_samples] if num_samples != "all" else prompts
-        train_cot = cot[:num_samples] if num_samples != "all" else cot
-        train_answers = answers[:num_samples] if num_samples != "all" else answers
+    for num_samples in [len(prompts)]:
+        train_config.num_example = num_samples
 
-        train_dataset = SFTDataset(train_prompts, train_cot, train_answers)
-        tokenizer = AutoTokenizer.from_pretrained(train_config.model_name)
-        print("[train] Tokenizer loaded")
-        dataloader = DataLoader(
-            dataset=train_dataset,
-            batch_size=train_config.batch_size,
-            shuffle=True,
-            num_workers=4,
-            pin_memory=True,
-            collate_fn=lambda batch: sft_collate_fn(batch, tokenizer),
-        )
-        print(f"[train] Dataloader initialized with batch size {train_config.batch_size}")
+        train_prompts = prompts[:num_samples]
+        train_cot = cot[:num_samples]
+        train_answers = answers[:num_samples]
 
         train_sft_model(
-            train_config, eval_config=eval_config, dataset=train_dataset, dataloader=dataloader, vllm=vllm
+            train_config,
+            eval_config=eval_config,
+            train_prompts=train_prompts,
+            train_cot=train_cot,
+            train_answers=train_answers,
+            vllm=vllm,
         )
 
     wandb.finish()
