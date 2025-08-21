@@ -86,7 +86,7 @@ def get_response_log_probs(
     #     return {"log_probs": cond_log_probs, "token_entropy": token_entropy}
 
     # return {"log_probs": cond_log_probs}
-    log_softmax = F.log_softmax(logits)  # b s v
+    log_softmax = F.log_softmax(logits, dim=-1)  # b s v
     label_token_log_softmax = log_softmax.gather(dim=-1, index=labels.unsqueeze(-1)).squeeze(-1)  # b s
 
     if return_token_entropy:

@@ -46,7 +46,7 @@ class TrainConfig:
     gradient_accumulation_steps: int = 16
     training_steps: int = 256
     mixed_precision_training: bool = True
-    learning_rate: float = 5e-6
+    learning_rate: float = 2e-5
     train_device: str = "cuda:0"
 
     num_example: int = 128
@@ -196,7 +196,7 @@ def evaluate_sft_model(config: EvaluateConfig, vllm: LLM, eval_step: int):
     )
 
 
-def train_sft_model(train_config: TrainConfig, eval_config: EvaluateConfig, dataloader, vllm=None):
+def train_sft_model(train_config: TrainConfig, eval_config: EvaluateConfig, dataset, dataloader, vllm=None):
     wandb.init(
         entity=os.getenv("WANDB_ENTITY"),
         project="cs336-alignment-sft",
@@ -268,9 +268,17 @@ def train_sft_model(train_config: TrainConfig, eval_config: EvaluateConfig, data
                 optimizer.step()
                 optimizer.zero_grad()
 
-                print(f"[train] Step {cur_step} | Loss: {loss_accum:.4f} | LR: {adj_lr:.6f}")
+                print(
+                    f"[train] Step {cur_step} | Loss: {loss_accum / train_config.gradient_accumulation_steps:.4f} | LR: {adj_lr:.6f}"
+                )
 
-                wandb.log({"train/loss": loss_accum, "train/lr": adj_lr, "train_step": cur_step})
+                wandb.log(
+                    {
+                        "train/loss": loss_accum / train_config.gradient_accumulation_steps,
+                        "train/lr": adj_lr,
+                        "train_step": cur_step,
+                    }
+                )
                 loss_accum = 0
                 cur_step += 1
 
@@ -278,8 +286,6 @@ def train_sft_model(train_config: TrainConfig, eval_config: EvaluateConfig, data
                 (i + 1) % train_config.gradient_accumulation_steps == 0
                 and cur_step % train_config.log_print_steps == 0
             ):
-                # Update the vllm model before logging
-                torch.cuda.synchronize()
                 load_model_into_vllm_instance(model, vllm)
                 log_generate(
                     vllm,
@@ -368,7 +374,9 @@ def main(
         )
         print(f"[train] Dataloader initialized with batch size {train_config.batch_size}")
 
-        train_sft_model(train_config, eval_config=eval_config, dataloader=dataloader, vllm=vllm)
+        train_sft_model(
+            train_config, eval_config=eval_config, dataset=train_dataset, dataloader=dataloader, vllm=vllm
+        )
 
     wandb.finish()
 
