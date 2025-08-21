@@ -25,8 +25,8 @@ def load_and_format_prompts(data_path: str, prompt_path: str):
 
 def run_vllm(vllm_model, prompts, sampling_params) -> List[str]:
     result = vllm_model.generate(prompts, sampling_params)
-    texts = [output.outputs[0].text.strip() for output in result]
-    return texts
+    outputs = [output.outputs[0].text.strip() for output in result]
+    return outputs
 
 
 def evaluate_vllm(
