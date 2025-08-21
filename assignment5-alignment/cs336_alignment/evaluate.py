@@ -1,26 +1,13 @@
-import argparse
 import json
-import re
+from pathlib import Path
 from typing import Callable, List, Union
 
+import fire
 from vllm import LLM, SamplingParams
 
+from cs336_alignment.data_utils import extract_reference_answer, load_and_format_prompts
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
-from cs336_alignment.utils import extract_reference_answer, safe_slug
-
-
-def load_and_format_prompts(data_path: str, prompt_path: str):
-    with open(prompt_path, "r") as file:
-        prompt = file.read()
-    prompts = []
-    answers = []
-    with open(data_path, "r") as file:
-        for line in file:
-            data = json.loads(line)
-            prompts.append(prompt.format(question=data["question"]))
-            answers.append(data["answer"])
-
-    return prompts, answers
+from cs336_alignment.utils import safe_slug
 
 
 def run_vllm(vllm_model, prompts, sampling_params) -> List[str]:
@@ -55,12 +42,6 @@ def evaluate_vllm(
     return allinfo_dict_list
 
 
-import os
-from pathlib import Path
-
-import fire
-
-
 def main(
     *,
     model_name: str = "Qwen/Qwen2.5-Math-1.5B",
@@ -90,11 +71,16 @@ def main(
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / f"evaluate_{model_tag}_{data_stem}.jsonl"
 
+    correct_count = 0
+
     with open(out_file, "w", encoding="utf-8") as f:
         for i in results:
+            if i["extracted_answer"] == i["answer"]:
+                correct_count += 1
             json.dump(i, f)
             f.write("\n")
 
+    print(f"Correct answers: {correct_count}/{len(results)}")
     print(f"Wrote {out_file}")
 
 
