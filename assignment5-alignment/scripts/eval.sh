@@ -3,7 +3,7 @@
 
 MODEL_NAME="Qwen/Qwen2.5-Math-1.5B"
 DATA_PATH="./data/gsm8k/test.jsonl"
-PROMPT_PATH="./prompts/r1_zero.prompt"
+PROMPT_PATH="./cs336_alignment/prompts/r1_zero.prompt"
 
 
 python cs336_alignment/evaluate.py \

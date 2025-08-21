@@ -976,16 +976,9 @@ def grade_answer_mathd(given_answer: str, ground_truth: str) -> bool:
     return False
 
 
-from cs336_alignment.utils import extract_reference_answer
-
-
 def extract_answer(passage: str) -> str:
     if "\\boxed" in passage:
         return extract_boxed_answer(passage)
-
-    if "###" in passage:
-        return extract_reference_answer(passage)
-
     return None
 
 
@@ -1007,11 +1000,10 @@ def r1_zero_reward_fn(response, ground_truth, fast=True):
     # We are strict about format to evaluate our models.
     if "</think> <answer>" in response and "</answer>" in response:
         model_answer = response.split("<answer>")[-1].replace("</answer>", "")
-        if "\\boxed" in model_answer or "###" in model_answer:
+        if "\\boxed" in model_answer:
             model_answer = extract_answer(model_answer)
             if model_answer is None:
                 return {"format_reward": 1.0, "answer_reward": 0.0, "reward": 0.0}
-
         if isinstance(ground_truth, float) or isinstance(ground_truth, int):
             ground_truth = str(ground_truth)
         if isinstance(ground_truth, str):

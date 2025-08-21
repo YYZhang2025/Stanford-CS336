@@ -120,6 +120,7 @@ def evaluate_vllm(
         extracted_answer = extract_reference_answer(answer)
         reward_dict = reward_fn(response, extracted_answer)
         allinfo_dict_list.append(reward_dict)
+
     overview = {"correct": 0, "format_wrong": 0, "answer_wrong": 0, "count": 0}
 
     for reward in allinfo_dict_list:

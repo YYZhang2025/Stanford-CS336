@@ -10,7 +10,7 @@ from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
 from cs336_alignment.utils import safe_slug
 
 
-def run_vllm(vllm_model, prompts, sampling_params) -> List[str]:
+def get_response(vllm_model, prompts, sampling_params) -> List[str]:
     result = vllm_model.generate(prompts, sampling_params)
     outputs = [output.outputs[0].text.strip() for output in result]
     return outputs
@@ -20,21 +20,22 @@ def evaluate_vllm(
     vllm_model: LLM,
     reward_fn: Callable[[str, str], dict[str, float]],
     prompts: List[str],
-    answers: List[str],
+    cot: List[str],
+    true_answers: List[str],
     eval_sampling_params: SamplingParams,
 ):
-    responses = run_vllm(vllm_model, prompts, eval_sampling_params)
+    responses = get_response(vllm_model, prompts, eval_sampling_params)
     allinfo_dict_list = []
-    for response, answer, prompt in zip(responses, answers, prompts):
-        extracted_answer = extract_reference_answer(answer)
-        reward_dict = reward_fn(response, extracted_answer)
+    for response, true_answer, prompt in zip(responses, true_answers, prompts):
+        extracted_answer = extract_reference_answer(response)
+        reward_dict = reward_fn(response, true_answer)
 
         info_dict: dict[str, Union[str, float]] = {
-            **reward_dict,
-            "response": response,
-            "answer": answer,
             "prompt": prompt,
+            "response": response,
+            "true_answer": true_answer,
             "extracted_answer": extracted_answer,
+            **reward_dict,
         }
 
         allinfo_dict_list.append(info_dict)
@@ -61,10 +62,11 @@ def main(
         include_stop_str_in_output=True,
     )
 
-    prompts, answers = load_and_format_prompts(data_path, prompt_path)
+    prompts, cot, true_answers = load_and_format_prompts(data_path, prompt_path)
 
-    results = evaluate_vllm(vllm_model, r1_zero_reward_fn, prompts, answers, sampling_params)
+    results = evaluate_vllm(vllm_model, r1_zero_reward_fn, prompts, cot, true_answers, sampling_params)
 
+    # Save the results
     model_tag = safe_slug(model_name)
     data_stem = Path(data_path).stem
     out_dir = Path("evaluations")
@@ -72,10 +74,9 @@ def main(
     out_file = out_dir / f"evaluate_{model_tag}_{data_stem}.jsonl"
 
     correct_count = 0
-
     with open(out_file, "w", encoding="utf-8") as f:
         for i in results:
-            if i["extracted_answer"] == i["answer"]:
+            if i["extracted_answer"] == i["true_answer"]:
                 correct_count += 1
             json.dump(i, f)
             f.write("\n")
