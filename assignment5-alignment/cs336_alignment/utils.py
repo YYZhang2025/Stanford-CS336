@@ -36,3 +36,13 @@ def print_rich_dict(data: dict) -> None:
     from rich.pretty import pprint
 
     pprint(data, expand_all=True)
+
+
+def print_color(text: str, color: str = "red"):
+    colors = {
+        "red": "\033[31m",
+        "green": "\033[32m",
+        "reset": "\033[0m",
+    }
+    color_code = colors.get(color.lower(), colors["reset"])
+    print(f"{color_code}{text}{colors['reset']}")
