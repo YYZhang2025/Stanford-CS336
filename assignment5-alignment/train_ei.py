@@ -124,7 +124,7 @@ def train_sft_model(
             labels = data["labels"].to(train_config.train_device)
             response_mask = data["response_mask"].to(train_config.train_device)
 
-            with ctx:
+            with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
                 log_prob = get_response_log_probs(model=model, input_ids=input_ids, labels=labels)
                 log_prob = log_prob["log_probs"]
                 loss, _ = sft_microbatch_train_step(

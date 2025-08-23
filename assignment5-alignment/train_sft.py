@@ -78,6 +78,15 @@ def sft_collate_fn(batch, tokenizer):
     return {**batch_enc, "answers": answers}
 
 
+def to_float(x):
+    if isinstance(x, torch.Tensor):
+        return x.float().item()
+    elif isinstance(x, str):
+        return float(x.strip())
+
+    return float(x)
+
+
 class SFTDataset(Dataset):
     def __init__(self, train_prompts, train_cot, train_answers):
         self.train_prompts = train_prompts
@@ -87,10 +96,10 @@ class SFTDataset(Dataset):
     def __len__(self):
         return len(self.train_prompts)
 
-    def __getitem__(self, idx: int) -> tuple[str, str, int]:
+    def __getitem__(self, idx: int) -> tuple[str, str, float]:
         prompt = self.train_prompts[idx]
         cot = self.train_cot[idx]
-        answer = int(self.train_answers[idx].strip())
+        answer = to_float(self.train_answers[idx])
 
         return prompt, cot, answer
 
