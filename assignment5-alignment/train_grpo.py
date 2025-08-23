@@ -1,13 +1,12 @@
-import gc
 import logging
 import math
 import os
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field
 
 import dotenv
 import fire
 import torch
-import torch.nn as nn
 import wandb
 from torch.utils.data import DataLoader, Dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -15,9 +14,9 @@ from vllm import LLM, SamplingParams
 
 from cs336_alignment.data_utils import load_and_format_prompts
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
-from cs336_alignment.grpo import compute_group_normalized_rewards
+from cs336_alignment.grpo import compute_group_normalized_rewards, grpo_microbatch_train_step
 from cs336_alignment.sft_utils import get_response_log_probs, tokenize_prompt_and_output
-from cs336_alignment.utils import cycle_dataloader, get_run_name, print_color, print_rich_dict
+from cs336_alignment.utils import cycle_dataloader, get_run_name, print_rich_dict
 from cs336_alignment.vllm_utils import init_vllm, load_model_into_vllm_instance
 
 logging.getLogger("vllm").setLevel(logging.WARNING)
@@ -32,12 +31,17 @@ class TrainConfig:
     data_path: str = "./data/gsm8k/train.jsonl"
     prompt_path: str = "./cs336_alignment/prompts/r1_zero.prompt"
 
+    micro_batch_size: int = 8
+    gradient_accumulation_steps: int = 4
+
+    advantage_eps: float = 1e-6
+
     # GRPO
     question_per_grpo_step: int = 10
     n_grpo_steps: int = 100
     n_train_steps_per_rollout_batch: int = 100
     group_size: int = 4
-    advangtage_eps: float = 1e-6
+    advantage_eps: float = 1e-6
     use_std_normalization: bool = True
 
     eval_device: str = "cuda:1"
@@ -84,25 +88,127 @@ class GRPODataset(Dataset):
         return prompt, cot, answer
 
 
-@torch.no_grad()
-def get_old_log_probs(model, input_ids, labels, response_mask):
+def get_old_log_probs(model, input_ids, labels, train_config: TrainConfig) -> tuple[list[float], list[float]]:
     model.eval()
-    
-    log_probs_dict = get_response_log_probs(
-        model=model,
-        input_ids=input_ids,
-        labels=labels,
-        return_token_entropy=True,
-    )
-    log_probs = log_probs_dict["log_probs"]
-    token_entropy = log_probs_dict["token_entropy"]
 
-    model.train()
+    log_probs = []
+    token_entropy = []
+
+    for train_step in range(train_config.question_per_grpo_step):
+        log_probs_step, token_entropy_step = get_response_log_probs(
+            model=model,
+            input_ids=input_ids[train_step : train_step + train_config.group_size],
+            labels=labels[train_step : train_step + train_config.group_size],
+            return_token_entropy=True,
+        )
+        log_probs.append(log_probs_step)
+        token_entropy.append(token_entropy_step)
+
+    assert len(log_probs) == len(input_ids)
+    assert len(token_entropy) == len(input_ids)
+
     return log_probs, token_entropy
 
 
-def update_policy(model, optimizer, train_config: TrainConfig):
-    
+class GRPORolloutDataset(Dataset):
+    """The rollout dataset for GRPO training.
+    input: (prompt, response, raw_reward, advantage)
+    """
+
+    def __init__(
+        self, model, prompts, responses, raw_rewards, advantages, train_config: TrainConfig, tokenizer
+    ):
+        self.prompts = prompts
+        self.responses = responses
+        self.raw_rewards = raw_rewards
+        self.advantages = advantages
+        self.old_log_probs = get_old_log_probs(model, prompts, responses, train_config)
+
+        self.tokenizer = tokenizer
+
+    def __len__(self):
+        return len(self.prompts)
+
+    def __getitem__(self, idx: int) -> tuple:
+        prompt = self.prompts[idx]
+        response = self.responses[idx]
+        raw_reward = self.raw_rewards[idx]
+        advantage = self.advantages[idx]
+        old_log_probs = self.old_log_probs[idx]
+
+        encoded = tokenize_prompt_and_output([prompt], [response], self.tokenizer)
+        input_ids = encoded["input_ids"][0]
+        labels = encoded["labels"][0]
+        response_mask = encoded["response_mask"][0]
+
+        return input_ids, labels, response_mask, raw_reward, advantage, old_log_probs[0]
+
+
+def update_policy(
+    model,
+    optimizer,
+    train_config: TrainConfig,
+    prompts,
+    responses,
+    raw_rewards,
+    advantages,
+    tokenizer,
+    global_step,
+):
+    model.eval()
+    with torch.no_grad():
+        dataset = GRPORolloutDataset(
+            model,
+            prompts,
+            responses,
+            raw_rewards,
+            advantages,
+            train_config,
+            tokenizer=tokenizer,
+        )
+    dataloader = DataLoader(dataset=dataset, batch_size=train_config.micro_batch_size, shuffle=True)
+    cycled_dataloader = cycle_dataloader(dataloader)
+    model.train()
+
+    ctx = (
+        torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+        if train_config.mixed_precision_training
+        else nullcontext()
+    )
+
+    cur_step = 0
+    global_step_ = global_step
+    total_steps = 0
+    while True:
+        batch = next(cycled_dataloader)
+        input_ids, labels, response_mask, raw_rewards, advantages, old_log_probs = batch
+
+        with ctx:
+            outputs = get_response_log_probs(model=model, input_ids=input_ids, labels=labels)
+            log_prob = outputs["log_probs"]
+            loss = grpo_microbatch_train_step(
+                log_prob,
+                response_mask,
+                train_config.gradient_accumulation_steps,
+                loss_type="grpo_clip",
+                raw_rewards=raw_rewards,
+                advantages=advantages,
+                old_log_probs=old_log_probs,
+                cliprange=0.2,
+            )
+
+        print(f"Step {global_step_ + 1}: Loss {loss}")
+        total_steps += 1
+        if (total_steps + 1) % train_config.gradient_accumulation_steps == 0:
+            optimizer.step()
+            optimizer.zero_grad()
+            cur_step += 1
+            global_step_ += 1
+
+        if cur_step >= train_config.n_grpo_steps:
+            break
+
+    return global_step_
 
 
 def get_lr(it, max_lr, max_steps):
@@ -175,6 +281,7 @@ def train_grpo(
     )
     cycled_dataloader = cycle_dataloader(base_dl)
 
+    global_step = 0
     for grpo_step in range(train_config.n_grpo_steps):
         # (3): Sample a batch of questions from dataset
         sample_batch = next(cycled_dataloader)
@@ -192,18 +299,11 @@ def train_grpo(
         all_responses = []
         all_answers = []
         for q, a, gens in zip(sample_prompts, sample_answers, all_gens):
-            for o in enumerate(gens.outputs):
+            for i, o in enumerate(gens.outputs):
+                print(f"[ei train] Generated output {i} for question '{q}': {o.text}")
                 all_prompts.append(q)
                 all_responses.append(o.text)
                 all_answers.append(a)
-
-        # Tokenize prompts and response
-        tokenizations = tokenize_prompt_and_output(all_prompts, all_responses, tokenizer)
-        input_ids, labels, response_mask = (
-            tokenizations["input_ids"].to(train_config.train_device),
-            tokenizations["labels"].to(train_config.train_device),
-            tokenizations["response_mask"].to(train_config.train_device),
-        )
 
         # (6) / (7): Compute rewards for each sampled output
         advantages, rewards, metadata = compute_group_normalized_rewards(
@@ -211,14 +311,26 @@ def train_grpo(
             rollout_responses=all_responses,
             repeated_ground_truths=all_answers,
             group_size=train_config.group_size,
-            advantage_eps=train_config.advangtage_eps,
+            advantage_eps=train_config.advantage_eps,
             normalized_by_std=train_config.use_std_normalization,
         )
+
+        print(f"[ei train] Advantages: {advantages}, Rewards: {rewards}")
 
         advantages_train = advantages.to(train_config.train_device)
         raw_rewards_train = rewards.to(train_config.train_device)
 
-        update_policy(model, optimizer, train_config)
+        global_step = update_policy(
+            model,
+            optimizer,
+            train_config,
+            advantages_train,
+            raw_rewards_train,
+            sample_prompts,
+            sample_answers,
+            tokenizer,
+            global_step,
+        )
 
         # Evaluate
 

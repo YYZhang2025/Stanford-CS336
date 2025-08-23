@@ -1,9 +1,17 @@
+import gc
 import json
 import time
 from pathlib import Path
 
 import regex as re
+import torch
 from rich import print
+
+
+def clear():
+    gc.collect()
+    torch.cuda.empty_cache()
+    torch.cuda.ipc_collect()
 
 
 def safe_slug(s: str) -> str:
@@ -39,10 +47,13 @@ def print_rich_dict(data: dict) -> None:
 
 
 def print_color(text: str, color: str = "red"):
-    colors = {
-        "red": "\033[31m",
-        "green": "\033[32m",
-        "reset": "\033[0m",
-    }
-    color_code = colors.get(color.lower(), colors["reset"])
-    print(f"{color_code}{text}{colors['reset']}")
+    print(f"[{color}]{text}[/{color}]")
+
+
+def cycle_dataloader(dataloader):
+    """
+    Creates a cycling iterator for a PyTorch DataLoader.
+    """
+    while True:
+        for batch in dataloader:
+            yield batch
