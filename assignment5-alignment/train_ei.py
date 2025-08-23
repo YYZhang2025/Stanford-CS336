@@ -1,5 +1,6 @@
 import gc
 import logging
+import math
 import os
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
@@ -20,9 +21,9 @@ from cs336_alignment.sft_utils import (
     get_response_log_probs,
     sft_microbatch_train_step,
 )
-from cs336_alignment.utils import get_run_name, print_color, save_model_and_tokenizer
+from cs336_alignment.utils import get_run_name, print_color, print_rich_dict, save_model_and_tokenizer
 from cs336_alignment.vllm_utils import init_vllm, load_model_into_vllm_instance
-from train_sft import SFTDataset, get_lr, log_generate, sft_collate_fn
+from train_sft import SFTDataset, evaluate_sft_model, log_generate, sft_collate_fn
 
 logging.getLogger("vllm").setLevel(logging.WARNING)
 
@@ -33,6 +34,77 @@ def clear():
     torch.cuda.ipc_collect()
 
 
+def cycle_dataloader(dataloader):
+    """
+    Creates a cycling iterator for a PyTorch DataLoader.
+    """
+    while True:
+        for batch in dataloader:
+            yield batch
+
+
+def cosine_lr_at_step(
+    step: int, base_lr: float, total_steps: int, *, warmup_ratio: float = 0.0, min_lr_factor: float = 0.1
+) -> float:
+    if total_steps <= 0:
+        return base_lr
+    warmup_steps = int(total_steps * warmup_ratio)
+    min_lr = base_lr * min_lr_factor
+
+    if step < warmup_steps and warmup_steps > 0:
+        # Linear warmup to base_lr
+        return base_lr * float(step + 1) / float(max(1, warmup_steps))
+
+    # Cosine decay from base_lr -> min_lr
+    t = step - warmup_steps
+    T = max(1, total_steps - warmup_steps)
+    coeff = 0.5 * (1.0 + math.cos(math.pi * min(1.0, t / T)))
+    return min_lr + coeff * (base_lr - min_lr)
+
+
+def compute_adjusted_lr(
+    *,
+    train_config,
+    pairs_this_ei: int,
+    cur_step: int,
+    global_step: int,
+) -> float:
+    """
+    Returns the learning rate for this optimizer step based on:
+      - train_config.lr_mode: {"constant", "per_outer", "global"}
+      - optional scaling by 1/sqrt(pairs_this_ei)
+      - cosine schedule params in train_config
+    """
+    # base LR (optionally scale by dataset size of this EI step)
+    base_lr = train_config.learning_rate
+    if getattr(train_config, "scale_lr_by_pairs", False) and pairs_this_ei > 0:
+        base_lr = base_lr / math.sqrt(max(1, pairs_this_ei))
+
+    mode = getattr(train_config, "lr_mode", "global")
+    if mode == "constant":
+        return base_lr
+
+    if mode == "per_outer":
+        total_steps = train_config.training_steps
+        return cosine_lr_at_step(
+            step=cur_step,
+            base_lr=base_lr,
+            total_steps=total_steps,
+            warmup_ratio=getattr(train_config, "warmup_ratio", 0.0),
+            min_lr_factor=getattr(train_config, "min_lr_factor", 0.1),
+        )
+
+    # default: "global"
+    total_global_steps = train_config.training_steps * train_config.n_ei_steps
+    return cosine_lr_at_step(
+        step=global_step,
+        base_lr=base_lr,
+        total_steps=total_global_steps,
+        warmup_ratio=getattr(train_config, "warmup_ratio", 0.0),
+        min_lr_factor=getattr(train_config, "min_lr_factor", 0.1),
+    )
+
+
 @dataclass
 class TrainConfig:
     experiment_name_base: str = "experiments"
@@ -40,6 +112,7 @@ class TrainConfig:
     model_name: str = "Qwen/Qwen2.5-Math-1.5B"
     data_path: str = "./data/gsm8k/train.jsonl"
     prompt_path: str = "./cs336_alignment/prompts/r1_zero.prompt"
+    num_example: int = 128
 
     # Optimization
     batch_size: int = 8
@@ -51,15 +124,28 @@ class TrainConfig:
     train_device: str = "cuda:0"
 
     # Expert Iteration hyper-parameters
-    n_ei_steps: int = 32  # outer EI steps (replaces training_steps)
-    question_per_steps: int = 128
+    n_ei_steps: int = 4  # outer EI steps (replaces training_steps)
+    question_per_step: int = 256
     samples_per_prompt: int = 4  # G in Algorithm 2
 
     # Logging / eval
-    num_example: int = 128
     log_print_steps: int = 12
     eval_device: str = "cuda:1"
     eval_interval_steps: int = 32
+
+    # Learning Rate adjust
+    lr_mode: str = "global"  # one of: "global", "per_outer", "constant"
+    warmup_ratio: float = 0.03  # 0 = no warmup
+    min_lr_factor: float = 0.1  # min_lr = lr * min_lr_factor
+    scale_lr_by_pairs: bool = True  # scale lr by 1/sqrt(num_kept_pairs) per EI step
+
+    # For Expert Iteration sampling
+    ei_temperature: float = 1.0
+    ei_top_p: float = 1.0
+    ei_max_tokens: int = 1024
+    ei_stop_tokens: list[str] = ["</answer>"]
+    ei_include_stop_str_in_output: bool = True
+    ei_min_tokens: int = 4
 
 
 @dataclass
@@ -68,19 +154,22 @@ class EvaluateConfig:
     prompt_path: str = "./cs336_alignment/prompts/r1_zero.prompt"
     temperature: float = 1.0
     top_p: float = 1.0
+    stop_tokens: list[str] = ["</answer>"]
     max_tokens: int = 1024
+    include_stop_str_in_output: bool = True
 
 
 def train_sft_model(
     model,
     tokenizer,
-    train_config,
-    eval_config,
+    optimizer,
+    train_config: TrainConfig,
     train_prompts,
     train_cot,
     train_answers,
-    vllm: LLM,
-    evaluate: bool = True,
+    global_step: int = 0,
+    ei_steps: int = 0,
+    pairs_this_ei: int = 0,
 ):
     # Data Preparation
     # ---------------------
@@ -93,22 +182,16 @@ def train_sft_model(
         pin_memory=True,
         collate_fn=lambda batch: sft_collate_fn(batch, tokenizer),
     )
-    print(f"[train] Dataloader initialized with batch size {train_config.batch_size}")
+    print(f"[train | ei step-{ei_steps}] Dataloader initialized with batch size {train_config.batch_size}")
 
     # ---------------------
     # Mixed Precision Context
     # ---------------------
     ctx = (
-        torch.autocast("cuda", dtype=torch.bfloat16)
+        torch.autocast(device_type="cuda", dtype=torch.bfloat16)
         if train_config.mixed_precision_training
         else nullcontext()
     )
-
-    # ---------------------
-    # Optimizer
-    # ---------------------
-    optimizer = torch.optim.AdamW(model.parameters(), lr=train_config.learning_rate, betas=train_config.betas)
-    print("[train] Optimizer initialized")
 
     # ---------------------
     # Training Process
@@ -117,6 +200,7 @@ def train_sft_model(
     batch_loss = 0
     total_loss = 0
     total_micro_steps = 0
+    global_step_ = global_step
     while True:
         for i, data in enumerate(dataloader):
             total_micro_steps += 1
@@ -124,7 +208,7 @@ def train_sft_model(
             labels = data["labels"].to(train_config.train_device)
             response_mask = data["response_mask"].to(train_config.train_device)
 
-            with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16):
+            with ctx:
                 log_prob = get_response_log_probs(model=model, input_ids=input_ids, labels=labels)
                 log_prob = log_prob["log_probs"]
                 loss, _ = sft_microbatch_train_step(
@@ -140,7 +224,13 @@ def train_sft_model(
 
             if total_micro_steps % train_config.gradient_accumulation_steps == 0:
                 nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                adj_lr = get_lr(cur_step, train_config.learning_rate, train_config.training_steps)
+
+                adj_lr = compute_adjusted_lr(
+                    train_config=train_config,
+                    pairs_this_ei=pairs_this_ei,
+                    cur_step=cur_step,
+                    global_step=global_step_,
+                )
                 for param_group in optimizer.param_groups:
                     param_group["lr"] = adj_lr
 
@@ -149,11 +239,19 @@ def train_sft_model(
                 total_loss += batch_loss / train_config.gradient_accumulation_steps
 
                 print(
-                    f"[train] Step {cur_step} | Loss: {batch_loss / train_config.gradient_accumulation_steps:.4f} | LR: {adj_lr:.6f}"
+                    f"[train | ei step-{ei_steps}] Step {global_step_} | Loss: {batch_loss / train_config.gradient_accumulation_steps:.4f} | LR: {adj_lr:.6f}"
+                )
+                wandb.log(
+                    {
+                        "train/loss": batch_loss / train_config.gradient_accumulation_steps,
+                        "train/lr": adj_lr,
+                        "train/step": global_step_,
+                    }
                 )
 
                 batch_loss = 0
                 cur_step += 1
+                global_step_ += 1
 
                 if cur_step >= train_config.training_steps:
                     break
@@ -161,7 +259,7 @@ def train_sft_model(
         if cur_step >= train_config.training_steps:
             break
 
-    return total_loss / cur_step
+    return total_loss / cur_step, global_step_
 
 
 class EIDataset(Dataset):
@@ -187,31 +285,26 @@ def ei_collect_correct_pairs(
     reward_fn: Callable[[str, str], dict[str, float]],
     prompts: List[str],
     answers: List[str],
-    sampling_params: SamplingParams,
-    samples_per_prompt: int,
+    train_config: TrainConfig,
 ) -> tuple[list[str], list[str]]:
     """Return (kept_prompts, kept_outputs) where reward==1."""
     kept_prompts: list[str] = []
     kept_outputs: list[str] = []
 
     # Ensure we sample multiple outputs per prompt.
-    sp = SamplingParams(
-        temperature=sampling_params.temperature,
-        top_p=sampling_params.top_p,
-        max_tokens=sampling_params.max_tokens,
-        stop=sampling_params.stop,
-        include_stop_str_in_output=sampling_params.include_stop_str_in_output,
-        min_tokens=4,
-        n=samples_per_prompt,
+    ei_sp = SamplingParams(
+        temperature=train_config.ei_temperature,
+        top_p=train_config.ei_top_p,
+        max_tokens=train_config.ei_max_tokens,
+        stop=train_config.ei_stop_tokens,
+        include_stop_str_in_output=train_config.ei_include_stop_str_in_output,
+        min_tokens=train_config.ei_min_tokens,
+        n=train_config.samples_per_prompt,
     )
 
-    all_gens = vllm_model.generate(prompts, sp)
+    all_gens = vllm_model.generate(prompts, ei_sp)
     for q, a, gens in zip(prompts, answers, all_gens):
         for i, o in enumerate(gens.outputs):
-            # print("Question:", q)
-            # print(f"Output {i}:", o.text)
-            # print("Answer:", a)
-
             # compute reward
             r = reward_fn(o.text, str(a))
             if r.get("reward", 0) == 1:
@@ -219,15 +312,6 @@ def ei_collect_correct_pairs(
                 kept_outputs.append(o.text)
 
     return kept_prompts, kept_outputs
-
-
-def cycle_dataloader(dataloader):
-    """
-    Creates a cycling iterator for a PyTorch DataLoader.
-    """
-    while True:
-        for batch in dataloader:
-            yield batch
 
 
 def train_ei_model(
@@ -243,12 +327,19 @@ def train_ei_model(
         project="cs336-alignment-ei",
         config={"train": asdict(train_config), "eval": asdict(eval_config)},
         name=get_run_name("ei", train_config),
-        reinit=True,
     )
     wandb.define_metric("train_step")
     wandb.define_metric("eval_step")
     wandb.define_metric("train/*", step_metric="train_step")
     wandb.define_metric("eval/*", step_metric="eval_step")
+
+    eval_sp = SamplingParams(
+        temperature=eval_config.temperature,
+        top_p=eval_config.top_p,
+        max_tokens=eval_config.max_tokens,
+        stop=eval_config.stop_tokens,
+        include_stop_str_in_output=eval_config.include_stop_str_in_output,
+    )
 
     # Load model/tokenizer
     model = AutoModelForCausalLM.from_pretrained(
@@ -258,32 +349,26 @@ def train_ei_model(
         device_map="cpu",
     ).to(train_config.train_device)
     tokenizer = AutoTokenizer.from_pretrained(train_config.model_name)
-    print(f"[train] Tokenizer {train_config.model_name} loaded")
-    print(f"[train] Model {train_config.model_name} loaded on {train_config.train_device}")
+    optimizer = torch.optim.AdamW(model.parameters(), lr=train_config.learning_rate, betas=train_config.betas)
+    print(f"[ei train] Tokenizer {train_config.model_name} loaded")
+    print(f"[ei train] Model {train_config.model_name} loaded on {train_config.train_device}")
+    print("[ei train] Optimizer loaded")
 
     # Base dataloader that provides (prompt, cot, answer); used only to sample questions/answers
     base_ds = EIDataset(train_prompts, train_cot, train_answers)
     base_dl = DataLoader(
         dataset=base_ds,
-        batch_size=train_config.question_per_steps,
+        batch_size=train_config.question_per_step,
         shuffle=True,
         num_workers=4,
         pin_memory=True,
     )
     cycled_dataloader = cycle_dataloader(base_dl)
 
-    sampling_params = SamplingParams(
-        temperature=eval_config.temperature,
-        top_p=eval_config.top_p,
-        max_tokens=eval_config.max_tokens,
-        stop=["</answer>"],
-        include_stop_str_in_output=True,
-    )
-
     # -------------------
     # Training Loop
     # -------------------
-    step = 0
+    global_step = 0
     for step in range(train_config.n_ei_steps):
         # (3) Sample a batch of questions Db from D
         # This batch will contain (prompt, cot, answer) tuples
@@ -297,65 +382,56 @@ def train_ei_model(
             reward_fn=r1_zero_reward_fn,
             prompts=question_batch,
             answers=answer_batch,
-            sampling_params=sampling_params,
-            samples_per_prompt=train_config.samples_per_prompt,
+            train_config=train_config,
         )
 
         if len(kept_prompts) == 0:
             print(f"[EI] Step {step}: no correct generations; skipping SFT update.")
             continue
 
-        print(f"[EI] Step {step} | Pairs: {len(kept_prompts)}")
+        print_color(f"[EI] Step {step} | Pairs: {len(kept_prompts)}")
         print("[EI] Example kept pair:")
         assert len(kept_prompts) == len(kept_outputs)
         print("Kept prompts: ", kept_prompts[0])
         print("Kept outputs: ", kept_outputs[0])
         # (8) pi_theta <- SFT(pi_theta, D_sft)
-        loss = train_sft_model(
+        loss, global_step = train_sft_model(
             model=model,
             tokenizer=tokenizer,
+            optimizer=optimizer,
             train_config=train_config,
-            eval_config=eval_config,
             train_prompts=kept_prompts,
             train_cot=kept_outputs,
             train_answers=[0] * len(kept_prompts),  # Dummy answers, not used in SFT
-            vllm=vllm,
-            evaluate=False,  # No eval during EI training
+            global_step=global_step,
+            ei_steps=step,
+            pairs_this_ei=len(kept_prompts),
         )
+        print_color(f"[EI] Step {step} | Pairs: {len(kept_prompts)} | Loss: {loss:.4f}", color="green")
 
-        print(f"[EI] Step {step} | Pairs: {len(kept_prompts)} | Loss: {loss:.4f}")
         wandb.log({"train/pairs": len(kept_prompts), "train_step": step, "train/loss": loss})
 
         print(f"Loaded weights to vllm at step {step}")
         load_model_into_vllm_instance(model, vllm)
         # Periodic qualitative logging and eval
         if (step + 1) % train_config.log_print_steps == 0:
-            print_color(f"Loaded policy model weight at {step + 1} to Vllm for log generation")
             log_generate(
                 vllm,
                 reward_fn=r1_zero_reward_fn,
                 prompts=base_ds.train_prompts,
                 cot=base_ds.train_cot,
                 answers=[str(x) for x in base_ds.train_answers],
-                eval_sampling_params=sampling_params,
+                eval_sampling_params=eval_sp,
                 cur_step=step,
-                num_example=3,
+                num_example=2,
             )
 
-        # if (step + 1) % train_config.eval_interval_steps == 0:
-        #     print(
-        #         f"[EI] Step {step}: saving model at {train_config.experiment_name}_{train_config.num_example}"
-        #     )
-        #     save_model_and_tokenizer(model, tokenizer, train_config)
-        #     print(f"[eval] at step {step}")
-        #     print_color(f"Loaded policy model weight at {step + 1} to Vllm for evaluation")
-
-        # evaluate_sft_model(eval_config, vllm, eval_step=cur_step)
-        # print(f"[eval] Evaluation completed for step {step}")
+        if (step + 1) % train_config.eval_interval_steps == 0:
+            evaluate_sft_model(eval_config, vllm, global_step)
 
     save_model_and_tokenizer(model, tokenizer, train_config)
-    print(f"[train] EI finished at step {cur_step}")
     wandb.finish()
+
     return model
 
 
@@ -371,6 +447,9 @@ def main(
 ):
     dotenv.load_dotenv()
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    os.environ["HF_HOME"] = "/workspace/hf"
+    os.environ["TRANSFORMERS_CACHE"] = "/workspace/hf/models"
+    os.environ["HF_HUB_CACHE"] = "/workspace/hf/hub"
 
     train_config = TrainConfig()
     eval_config = EvaluateConfig()
@@ -385,6 +464,9 @@ def main(
     for num_samples in [len(prompts)]:
         train_config.num_example = num_samples
         train_config.experiment_name = f"experiment_{num_samples}"
+        train_config.n_ei_steps = math.ceil(num_samples / train_config.question_per_step)
+
+        print_rich_dict({"train config": asdict(train_config), "eval config": asdict(eval_config)})
 
         train_prompts = prompts[:num_samples]
         train_cot = cot[:num_samples]
