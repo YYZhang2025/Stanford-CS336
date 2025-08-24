@@ -4,6 +4,8 @@ import torch
 from vllm import LLM
 from vllm.model_executor import set_random_seed as vllm_set_random_seed
 
+from cs336_alignment.utils import print_color
+
 
 def init_vllm(model_id: str, device: str, seed: int, gpu_memory_utilization: float = 0.85):
     vllm_set_random_seed(seed)
@@ -22,7 +24,26 @@ def init_vllm(model_id: str, device: str, seed: int, gpu_memory_utilization: flo
         )
 
 
+# def load_model_into_vllm_instance(model: torch.nn.Module, llm: LLM):
+#     model.eval()
+#     model.tie_weights()
+#     state_dict = model.state_dict()
+#     llm_model = llm.llm_engine.model_executor.driver_worker.model_runner.model
+#     llm_model.load_weights(state_dict.items())
+#     # llm_model.load_weights(sd.items())
+#     torch.cuda.synchronize(torch.device('cuda:1'))
+
+#     model.train()
+#     print_color("Model weights loaded into VLLM instance.")
+
+
 def load_model_into_vllm_instance(model: torch.nn.Module, llm: LLM):
-    state_dict = model.state_dict()
+    # snapshot to CPU -> then load into vLLM
+    model.eval()
+    model.tie_weights()
+    cpu_sd = {k: v.detach().to("cpu") for k, v in model.state_dict().items()}
     llm_model = llm.llm_engine.model_executor.driver_worker.model_runner.model
-    llm_model.load_weights(state_dict.items())
+    llm_model.load_weights(cpu_sd.items())
+    model.train()
+    torch.cuda.synchronize(torch.device("cuda:1"))
+    print_color("Model weights loaded into VLLM instance.")

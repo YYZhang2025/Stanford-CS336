@@ -3,7 +3,7 @@ import logging
 import math
 import os
 from contextlib import nullcontext
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Callable, List
 
 import dotenv
@@ -43,66 +43,14 @@ def cycle_dataloader(dataloader):
             yield batch
 
 
-def cosine_lr_at_step(
-    step: int, base_lr: float, total_steps: int, *, warmup_ratio: float = 0.0, min_lr_factor: float = 0.1
-) -> float:
-    if total_steps <= 0:
-        return base_lr
-    warmup_steps = int(total_steps * warmup_ratio)
-    min_lr = base_lr * min_lr_factor
-
-    if step < warmup_steps and warmup_steps > 0:
-        # Linear warmup to base_lr
-        return base_lr * float(step + 1) / float(max(1, warmup_steps))
-
-    # Cosine decay from base_lr -> min_lr
-    t = step - warmup_steps
-    T = max(1, total_steps - warmup_steps)
-    coeff = 0.5 * (1.0 + math.cos(math.pi * min(1.0, t / T)))
-    return min_lr + coeff * (base_lr - min_lr)
-
-
-def compute_adjusted_lr(
-    *,
-    train_config,
-    pairs_this_ei: int,
-    cur_step: int,
-    global_step: int,
-) -> float:
-    """
-    Returns the learning rate for this optimizer step based on:
-      - train_config.lr_mode: {"constant", "per_outer", "global"}
-      - optional scaling by 1/sqrt(pairs_this_ei)
-      - cosine schedule params in train_config
-    """
-    # base LR (optionally scale by dataset size of this EI step)
-    base_lr = train_config.learning_rate
-    if getattr(train_config, "scale_lr_by_pairs", False) and pairs_this_ei > 0:
-        base_lr = base_lr / math.sqrt(max(1, pairs_this_ei))
-
-    mode = getattr(train_config, "lr_mode", "global")
-    if mode == "constant":
-        return base_lr
-
-    if mode == "per_outer":
-        total_steps = train_config.training_steps
-        return cosine_lr_at_step(
-            step=cur_step,
-            base_lr=base_lr,
-            total_steps=total_steps,
-            warmup_ratio=getattr(train_config, "warmup_ratio", 0.0),
-            min_lr_factor=getattr(train_config, "min_lr_factor", 0.1),
-        )
-
-    # default: "global"
-    total_global_steps = train_config.training_steps * train_config.n_ei_steps
-    return cosine_lr_at_step(
-        step=global_step,
-        base_lr=base_lr,
-        total_steps=total_global_steps,
-        warmup_ratio=getattr(train_config, "warmup_ratio", 0.0),
-        min_lr_factor=getattr(train_config, "min_lr_factor", 0.1),
-    )
+def get_lr(it, max_lr, max_steps):
+    min_lr = max_lr * 0.1
+    if it >= max_steps:
+        return min_lr
+    # pure cosine decay
+    decay_ratio = it / max_steps
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
+    return min_lr + coeff * (max_lr - min_lr)
 
 
 @dataclass
@@ -131,7 +79,7 @@ class TrainConfig:
     # Logging / eval
     log_print_steps: int = 12
     eval_device: str = "cuda:1"
-    eval_interval_steps: int = 32
+    eval_interval_steps: int = 12
 
     # Learning Rate adjust
     lr_mode: str = "global"  # one of: "global", "per_outer", "constant"
@@ -143,7 +91,7 @@ class TrainConfig:
     ei_temperature: float = 1.0
     ei_top_p: float = 1.0
     ei_max_tokens: int = 1024
-    ei_stop_tokens: list[str] = ["</answer>"]
+    ei_stop_tokens: list[str] = field(default_factory=lambda: ["</answer>"])
     ei_include_stop_str_in_output: bool = True
     ei_min_tokens: int = 4
 
@@ -154,7 +102,7 @@ class EvaluateConfig:
     prompt_path: str = "./cs336_alignment/prompts/r1_zero.prompt"
     temperature: float = 1.0
     top_p: float = 1.0
-    stop_tokens: list[str] = ["</answer>"]
+    stop_tokens: list[str] = field(default_factory=lambda: ["</answer>"])
     max_tokens: int = 1024
     include_stop_str_in_output: bool = True
 
@@ -225,12 +173,13 @@ def train_sft_model(
             if total_micro_steps % train_config.gradient_accumulation_steps == 0:
                 nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
-                adj_lr = compute_adjusted_lr(
-                    train_config=train_config,
-                    pairs_this_ei=pairs_this_ei,
-                    cur_step=cur_step,
-                    global_step=global_step_,
-                )
+                # adj_lr = compute_adjusted_lr(
+                #     train_config=train_config,
+                #     pairs_this_ei=pairs_this_ei,
+                #     cur_step=cur_step,
+                #     global_step=global_step_,
+                # )
+                adj_lr = get_lr(ei_steps, train_config.learning_rate, train_config.n_ei_steps)
                 for param_group in optimizer.param_groups:
                     param_group["lr"] = adj_lr
 
@@ -409,7 +358,7 @@ def train_ei_model(
         )
         print_color(f"[EI] Step {step} | Pairs: {len(kept_prompts)} | Loss: {loss:.4f}", color="green")
 
-        wandb.log({"train/pairs": len(kept_prompts), "train_step": step, "train/loss": loss})
+        # wandb.log({"train/pairs": len(kept_prompts), "train_step": step, "train/loss": loss})
 
         print(f"Loaded weights to vllm at step {step}")
         load_model_into_vllm_instance(model, vllm)
@@ -428,6 +377,7 @@ def train_ei_model(
 
         if (step + 1) % train_config.eval_interval_steps == 0:
             evaluate_sft_model(eval_config, vllm, global_step)
+            save_model_and_tokenizer(model, tokenizer, train_config)
 
     save_model_and_tokenizer(model, tokenizer, train_config)
     wandb.finish()
