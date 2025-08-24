@@ -16,8 +16,16 @@ from cs336_alignment.data_utils import load_and_format_prompts
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
 from cs336_alignment.grpo import compute_group_normalized_rewards, grpo_microbatch_train_step
 from cs336_alignment.sft_utils import get_response_log_probs, tokenize_prompt_and_output
-from cs336_alignment.utils import cycle_dataloader, get_run_name, print_color, print_rich_dict
+from cs336_alignment.utils import (
+    clear,
+    cycle_dataloader,
+    get_run_name,
+    print_color,
+    print_rich_dict,
+    save_model_and_tokenizer,
+)
 from cs336_alignment.vllm_utils import init_vllm, load_model_into_vllm_instance
+from train_sft import evaluate_sft_model
 
 logging.getLogger("vllm").setLevel(logging.WARNING)
 
@@ -32,23 +40,26 @@ class TrainConfig:
     prompt_path: str = "./cs336_alignment/prompts/r1_zero.prompt"
     num_example: int = 7000
 
-    micro_batch_size: int = 8
-    gradient_accumulation_steps: int = 8
+    micro_batch_size: int = 2
+    gradient_accumulation_steps: int = 128
 
     advantage_eps: float = 1e-6
 
     # GRPO
-    question_per_grpo_step: int = 10
     n_grpo_steps: int = 200
-    n_train_steps_per_rollout_batch: int = 100
-    group_size: int = 4
+    question_per_grpo_step: int = 256
+    group_size: int = 8
+    n_train_steps_per_rollout_batch: int = 4
     advantage_eps: float = 1e-6
     use_std_normalization: bool = True
 
-    eval_device: str = "cuda:1"
     mixed_precision_training: bool = True
+    # Optimizer
     learning_rate: float = 1e-5
     betas: tuple[float, float] = (0.9, 0.95)
+
+    eval_steps: int = 2
+    eval_device: str = "cuda:1"
     train_device: str = "cuda:0"
 
     # For VLLM sampling
@@ -92,30 +103,25 @@ class GRPODataset(Dataset):
 def get_old_log_probs(
     model, input_ids, labels, train_config: TrainConfig
 ) -> tuple[list[list[float]], list[list[float]]]:
+    is_training = model.training
     model.eval()
 
     log_probs = []
     token_entropy = []
 
-    # for train_step in range(0, train_config.question_per_grpo_step // train_config.group_size * train_config.group_size,
-    #                     train_config.group_size):
+    input_ids = input_ids.to(train_config.train_device)
+    labels = labels.to(train_config.train_device)
 
     for train_step in range(0, train_config.question_per_grpo_step):
-        print(train_step)
+        start_index = train_step * train_config.group_size
         input_ids_part = input_ids[
-            train_step * train_config.group_size : train_step * train_config.group_size
-            + train_config.group_size,
+            start_index : start_index + train_config.group_size,
             :,
         ]
         labels_part = labels[
-            train_step * train_config.group_size : train_step * train_config.group_size
-            + train_config.group_size,
+            start_index : start_index + train_config.group_size,
             :,
         ]
-
-        input_ids_part = input_ids_part.to(train_config.train_device)
-        labels_part = labels_part.to(train_config.train_device)
-        print(input_ids_part.shape, labels_part.shape)
 
         out = get_response_log_probs(
             model=model,
@@ -127,11 +133,13 @@ def get_old_log_probs(
         log_probs.extend(out["log_probs"].tolist())
         token_entropy.extend(out["token_entropy"].tolist())
 
-    print(len(log_probs))
+        del out
+        clear()
+
     assert len(log_probs) == input_ids.shape[0]
     assert len(token_entropy) == input_ids.shape[0]
 
-    model.train()
+    model.train(is_training)
     return log_probs, token_entropy
 
 
@@ -144,38 +152,35 @@ class GRPORolloutDataset(Dataset):
         self, model, prompts, responses, raw_rewards, advantages, train_config: TrainConfig, tokenizer
     ):
         print_color("Generate Rollout Dataset...")
-        print(prompts[0])
-        print(responses[0])
         self.raw_rewards = raw_rewards
         self.advantages = advantages
 
+        # Encode prompts and responses
         encoded = tokenize_prompt_and_output(prompts, responses, tokenizer)
         input_ids = encoded["input_ids"]
         labels = encoded["labels"]
         response_mask = encoded["response_mask"]
 
-        print(input_ids.shape)
-        print(labels.shape)
-        print(response_mask.shape)
-
-        self.old_log_probs, self.token_entropy = get_old_log_probs(model, input_ids, labels, train_config)
-
         self.input_ids = input_ids
         self.labels = labels
         self.response_mask = response_mask
+
+        # We need calculate the old log probs using old model,
+        self.old_log_probs, self.token_entropy = get_old_log_probs(model, input_ids, labels, train_config)
 
     def __len__(self):
         return len(self.input_ids)
 
     def __getitem__(self, idx: int) -> tuple:
-        input_ids = self.input_ids[idx]
-        labels = self.labels[idx]
-        response_mask = self.response_mask[idx]
+        input_ids = self.input_ids[idx]  # Tensor: [1, seq_len]
+        labels = self.labels[idx]  # Tensor: [1, seq_len]
+        response_mask = self.response_mask[idx]  # Tensor: [1, seq_len]
         raw_reward = self.raw_rewards[idx]
         advantage = self.advantages[idx]
+        advantage = advantage.unsqueeze(-1)
         old_log_probs = self.old_log_probs[idx]
 
-        return input_ids, labels, response_mask, raw_reward, advantage, old_log_probs[0]
+        return input_ids, labels, response_mask, raw_reward, advantage, torch.tensor(old_log_probs)
 
 
 def update_policy(
@@ -189,7 +194,6 @@ def update_policy(
     tokenizer,
     global_step,
 ):
-    model.eval()
     with torch.no_grad():
         dataset = GRPORolloutDataset(
             model,
@@ -202,8 +206,8 @@ def update_policy(
         )
     dataloader = DataLoader(dataset=dataset, batch_size=train_config.micro_batch_size, shuffle=True)
     cycled_dataloader = cycle_dataloader(dataloader)
-    model.train()
 
+    model.train()
     ctx = (
         torch.autocast(device_type="cuda", dtype=torch.bfloat16)
         if train_config.mixed_precision_training
@@ -213,14 +217,22 @@ def update_policy(
     cur_step = 0
     global_step_ = global_step
     total_steps = 0
+    batch_loss = 0
     while True:
+        # Fetch the next batch
         batch = next(cycled_dataloader)
         input_ids, labels, response_mask, raw_rewards, advantages, old_log_probs = batch
+        input_ids = input_ids.to(train_config.train_device)
+        labels = labels.to(train_config.train_device)
+        old_log_probs = old_log_probs.to(train_config.train_device)
+        response_mask = response_mask.to(train_config.train_device)
+        advantages = advantages.to(train_config.train_device)
+        raw_rewards = raw_rewards.to(train_config.train_device)
 
         with ctx:
             outputs = get_response_log_probs(model=model, input_ids=input_ids, labels=labels)
             log_prob = outputs["log_probs"]
-            loss = grpo_microbatch_train_step(
+            loss, metadata = grpo_microbatch_train_step(
                 log_prob,
                 response_mask,
                 train_config.gradient_accumulation_steps,
@@ -231,15 +243,29 @@ def update_policy(
                 cliprange=0.2,
             )
 
-        print(f"Step {global_step_ + 1}: Loss {loss}")
+            batch_loss += loss
+
         total_steps += 1
+
+        del input_ids
+        del labels
+        del old_log_probs
+        del response_mask
+        del advantages
+        del raw_rewards
+        clear()
         if (total_steps + 1) % train_config.gradient_accumulation_steps == 0:
+            torch.nn.utils
             optimizer.step()
             optimizer.zero_grad()
+
+            print(f"Step {global_step_ + 1} | Loss {batch_loss / train_config.gradient_accumulation_steps}")
+            wandb.log({"train/loss": batch_loss}, step=global_step_ + 1)
             cur_step += 1
             global_step_ += 1
+            batch_loss = 0
 
-        if cur_step >= train_config.n_grpo_steps:
+        if cur_step >= train_config.n_train_steps_per_rollout_batch:
             break
 
     return global_step_
@@ -267,7 +293,7 @@ def train_grpo(
         entity=os.getenv("WANDB_ENTITY"),
         project="cs336-alignment-grpo",
         config={"train": asdict(train_config), "eval": asdict(eval_config)},
-        name=get_run_name("ei", train_config),
+        name=get_run_name("grpo", train_config),
     )
     wandb.define_metric("train_step")
     wandb.define_metric("eval_step")
@@ -344,7 +370,8 @@ def train_grpo(
                 all_responses.append(o.text)
                 all_answers.append(a)
 
-        print(f"[ei train] Generated output for question '{all_prompts[0]}': {all_responses[0]}")
+        print("[grpo train] Generated output for question:")
+        print_rich_dict({"prompt": all_prompts[0], "responses": all_responses[0], "answers": all_answers[0]})
 
         # (6) / (7): Compute rewards for each sampled output
         advantages_train, raw_rewards_train, metadata = compute_group_normalized_rewards(
@@ -355,8 +382,6 @@ def train_grpo(
             advantage_eps=train_config.advantage_eps,
             normalized_by_std=train_config.use_std_normalization,
         )
-
-        print(f"[ei train] Advantages: {advantages_train}, Rewards: {raw_rewards_train}")
 
         global_step = update_policy(
             model=model,
@@ -371,6 +396,18 @@ def train_grpo(
         )
 
         # Evaluate
+        if grpo_step % train_config.eval_steps == 0:
+            evaluate_sft_model(
+                vllm=vllm,
+                config=eval_config,
+                eval_step=global_step,
+            )
+
+            save_model_and_tokenizer(model, tokenizer, train_config)
+
+        save_model_and_tokenizer(model, tokenizer, train_config)
+
+        print("Training Finished")
 
 
 def main(
