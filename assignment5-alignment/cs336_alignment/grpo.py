@@ -142,7 +142,7 @@ def grpo_microbatch_train_step(
     advantages: torch.Tensor | None = None,
     old_log_probs: torch.Tensor | None = None,
     cliprange: float | None = None,
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+) -> tuple[float, dict[str, torch.Tensor]]:
     # Compute loss and metadata
     loss, metadata = compute_policy_gradient_loss(
         policy_log_probs=policy_log_probs,
@@ -158,4 +158,4 @@ def grpo_microbatch_train_step(
     # Backpropagate the loss
     loss.backward()
 
-    return loss, metadata
+    return loss.item(), metadata

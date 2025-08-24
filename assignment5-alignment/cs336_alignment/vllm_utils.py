@@ -24,19 +24,6 @@ def init_vllm(model_id: str, device: str, seed: int, gpu_memory_utilization: flo
         )
 
 
-# def load_model_into_vllm_instance(model: torch.nn.Module, llm: LLM):
-#     model.eval()
-#     model.tie_weights()
-#     state_dict = model.state_dict()
-#     llm_model = llm.llm_engine.model_executor.driver_worker.model_runner.model
-#     llm_model.load_weights(state_dict.items())
-#     # llm_model.load_weights(sd.items())
-#     torch.cuda.synchronize(torch.device('cuda:1'))
-
-#     model.train()
-#     print_color("Model weights loaded into VLLM instance.")
-
-
 def load_model_into_vllm_instance(model: torch.nn.Module, llm: LLM):
     # snapshot to CPU -> then load into vLLM
     model.eval()

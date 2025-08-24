@@ -429,6 +429,8 @@ def train_grpo(
                 }
             )
 
+            print(results)
+
             save_model_and_tokenizer(model, tokenizer, train_config)
 
         save_model_and_tokenizer(model, tokenizer, train_config)
