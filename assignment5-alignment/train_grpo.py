@@ -9,6 +9,7 @@ import fire
 import torch
 import wandb
 from torch.utils.data import DataLoader, Dataset
+from tqdm import trange
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from vllm import LLM, SamplingParams
 
@@ -25,7 +26,7 @@ from cs336_alignment.utils import (
     save_model_and_tokenizer,
 )
 from cs336_alignment.vllm_utils import init_vllm, load_model_into_vllm_instance
-from train_sft import evaluate_sft_model
+from train_sft import evaluate_sft_model, evaluate_vllm
 
 logging.getLogger("vllm").setLevel(logging.WARNING)
 
@@ -46,9 +47,12 @@ class TrainConfig:
     advantage_eps: float = 1e-6
 
     # GRPO
-    n_grpo_steps: int = 200
-    question_per_grpo_step: int = 256
+    # n_grpo_steps: int = 200
+    n_grpo_steps: int = 10
+    # question_per_grpo_step: int = 256
+    question_per_grpo_step: int = 128
     group_size: int = 8
+    n_train_epochs_per_rollout_batch: int = 1
     n_train_steps_per_rollout_batch: int = 4
     advantage_eps: float = 1e-6
     use_std_normalization: bool = True
@@ -70,6 +74,14 @@ class TrainConfig:
     include_stop_str_in_output: bool = True
     min_tokens: int = 4
     vllm_seed: int = 42
+
+    def __post_init__(self):
+        total_data_points = (
+            self.n_train_epochs_per_rollout_batch * self.question_per_grpo_step * self.group_size
+        )
+        batch_size = self.micro_batch_size * self.gradient_accumulation_steps
+
+        self.n_train_steps_per_rollout_batch = total_data_points // batch_size
 
 
 @dataclass
@@ -112,7 +124,7 @@ def get_old_log_probs(
     input_ids = input_ids.to(train_config.train_device)
     labels = labels.to(train_config.train_device)
 
-    for train_step in range(0, train_config.question_per_grpo_step):
+    for train_step in trange(0, train_config.question_per_grpo_step):
         start_index = train_step * train_config.group_size
         input_ids_part = input_ids[
             start_index : start_index + train_config.group_size,
@@ -259,8 +271,10 @@ def update_policy(
             optimizer.step()
             optimizer.zero_grad()
 
-            print(f"Step {global_step_ + 1} | Loss {batch_loss / train_config.gradient_accumulation_steps}")
-            wandb.log({"train/loss": batch_loss}, step=global_step_ + 1)
+            print(
+                f"Step {global_step_ + 1} | Loss {batch_loss / train_config.gradient_accumulation_steps: .4f}"
+            )
+            wandb.log({"train/loss": batch_loss, "train_step": global_step_ + 1})
             cur_step += 1
             global_step_ += 1
             batch_loss = 0
@@ -396,18 +410,30 @@ def train_grpo(
         )
 
         # Evaluate
-        if grpo_step % train_config.eval_steps == 0:
-            evaluate_sft_model(
-                vllm=vllm,
-                config=eval_config,
-                eval_step=global_step,
+        if (grpo_step + 1) % train_config.eval_steps == 0:
+            load_model_into_vllm_instance(model, vllm)
+            prompts, cot, answers = load_and_format_prompts(eval_config.data_path, eval_config.prompt_path)
+            results = evaluate_vllm(
+                vllm_model=vllm,
+                reward_fn=r1_zero_reward_fn,
+                prompts=prompts,
+                answers=answers,
+                eval_sampling_params=eval_sp,
+            )
+            wandb.log(
+                {
+                    "eval/correct": results["correct"],
+                    "eval/answer_wrong": results["answer_wrong"],
+                    "eval/format_wrong": results["format_wrong"],
+                    "eval_step": grpo_step,
+                }
             )
 
             save_model_and_tokenizer(model, tokenizer, train_config)
 
         save_model_and_tokenizer(model, tokenizer, train_config)
 
-        print("Training Finished")
+    print("Training Finished")
 
 
 def main(
