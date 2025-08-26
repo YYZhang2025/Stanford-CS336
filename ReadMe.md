@@ -25,17 +25,16 @@ My Notes are available in the [Notes](https://yuyang.info/Course-Notes/posts/Gen
 
 In the assignment 1, it will ask you to implement the:
 
-- BPE Tokenizer 
-- Rope Positional Encoding
-- Multi-head Attention
+- BPE Tokenizer
+- Transformer Model
+- Optimizer and Training Loop
 
-And so on, for me, the most challenging and error-prone part is the BPE Tokenizer.  After that, the rest of the code is relatively straightforward. If you want to learn about Transformer, I highly recommend through my this post [PwC-01: Transformer](https://yuyang.info/100-AI-Papers/posts/01-transformer.html)(Due to the limited time, I only wrote the Chinese version, but code part is available).
+For me, the most challenging and error-prone part is the BPE Tokenizer part.  After that, the rest of the code is relatively straightforward. If you want to learn about Transformer, I highly recommend through my this post [PwC-01: Transformer](https://yuyang.info/100-AI-Papers/posts/01-transformer.html)(Due to the limited time, I only wrote the Chinese version, but code part is available).
 
 
 ### Assignment 02: System
-```Python
-raise NotImplementedError("This assignment is not implemented yet.")
-```
+
+![](./assets/ass02.JPG)
 
 
 
