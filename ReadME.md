@@ -51,6 +51,9 @@ It will create a `data` folder in the current directory and download the require
 
 
 # Assignment 02: Flash Attention & Parallelism
+```Python
+raise NotImplementedError("This is a placeholder for Assignment 02 solution.")
+```
 
 
 # Assignment 03: Scaling Laws 
