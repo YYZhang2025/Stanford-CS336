@@ -1,3 +1,4 @@
+import json
 import os
 import pickle
 from collections import Counter, defaultdict
@@ -7,6 +8,7 @@ from queue import Empty
 from typing import BinaryIO
 
 import regex as re
+from tqdm import trange
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 NUM_PROCESSES = max(1, (os.cpu_count() or 1) - 4)
@@ -312,10 +314,34 @@ def merge_pairs_incremental(
     return new_word_counter, updated_pair_counter
 
 
+def save_vocab_and_merges(
+    vocab: dict[int, bytes],
+    merges: list[tuple[bytes, bytes]],
+    output_dir: str | os.PathLike,
+):
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    vocab_filepath = os.path.join(output_dir, "vocab.json")
+    merges_filepath = os.path.join(output_dir, "merges.txt")
+
+    # Save vocab
+    vocab_inv = {v.decode("latin1"): k for k, v in vocab.items()}
+    with open(vocab_filepath, "w") as vf:
+        json.dump(vocab_inv, vf, ensure_ascii=False, indent=2)
+
+    # Save merges
+    with open(merges_filepath, "w") as mf:
+        mf.write("#version: 0.2\n")
+        for a, b in merges:
+            mf.write(f"{a.decode('latin1')} {b.decode('latin1')}\n")
+
+
 def train_bpe(
     input_path: str | os.PathLike,
     vocab_size: int,
     special_tokens: list[str] | None = None,
+    verbose: bool = False,
     **kwargs,
 ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
     # start_time = time.time()
@@ -329,6 +355,9 @@ def train_bpe(
         chunk_boundaries = find_chunk_boundaries(
             f, desired_num_chunks=kwargs.get("desired_num_chunks", NUM_PROCESSES), split_special_token=b"\n"
         )
+
+    if verbose:
+        print(f"Identified {len(chunk_boundaries) - 1} chunks for pre-tokenization.")
 
     # 1.2 Count word frequencies across chunks using multiprocessing
     manager = Manager()
@@ -345,6 +374,9 @@ def train_bpe(
     for p in processes:
         p.join()
 
+    if verbose:
+        print("Pre-tokenization processes completed. Aggregating results...")
+
     word_counter = Counter()
     pairs_freqs = Counter()
     for _ in range(len(processes)):
@@ -354,9 +386,11 @@ def train_bpe(
             pairs_freqs.update(partial_pairs)
         except Empty:
             continue
-
+    if verbose:
+        print(f"Completed pre-tokenization. Vocabulary size: {len(word_counter)} unique tokens.")
     # 2. BPE Core Loop
-    for _ in range(num_merges):
+
+    for _ in trange(num_merges):
         most_frequent_pair = get_most_frequent_pair(pairs_freqs, vocab)
         new_id = add_pair_to_vocab(vocab, most_frequent_pair)
         # word_counter, pairs_freqs = merge_pairs(word_counter, most_frequent_pair, new_id)
@@ -368,6 +402,9 @@ def train_bpe(
 
     # end_time = time.time()
     # print(f"BPE training completed in {end_time - start_time:.2f} seconds.")
+    if kwargs.get("save_path"):
+        save_vocab_and_merges(vocab, merges, kwargs["save_path"])
+
     return vocab, merges
 
 
@@ -465,8 +502,6 @@ class BPETokenizer:
     def from_files(
         cls, vocab_filepath: str, merges_filepath: str, special_tokens: list[str] | None = None
     ) -> "BPETokenizer":
-        import json
-
         with open(vocab_filepath, "r") as vf:
             vocab_data = json.load(vf)
             vocab = {int(i): bytes(v, "latin1") for v, i in vocab_data.items()}
