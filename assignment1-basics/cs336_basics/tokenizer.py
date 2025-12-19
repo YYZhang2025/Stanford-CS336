@@ -1,5 +1,7 @@
 import os
+import pickle
 from collections import Counter, defaultdict
+from collections.abc import Iterable, Iterator
 from multiprocessing import Manager, Process, Queue
 from queue import Empty
 from typing import BinaryIO
@@ -85,6 +87,9 @@ def init_vocab(special_tokens: list[str] | None = None) -> dict[int, bytes]:
 ### --------- Pre-process & Pre-tokenization steps --------------
 # 1. Split by special tokens
 def split_by_special_tokens(text: str, special_tokens: list[str], include_special: bool = False) -> list[str]:
+    if not special_tokens:
+        return [text]
+
     special_tokens_sorted = sorted(special_tokens, key=len, reverse=True)
     pattern = "|".join(re.escape(t) for t in special_tokens_sorted)
 
@@ -181,6 +186,35 @@ def add_pair_to_vocab(
     vocab[index] = vocab[pair[0]] + vocab[pair[1]]
 
     return index
+
+
+import heapq
+
+
+def build_pair_heap(pair_counter: Counter, vocab: dict[int, bytes]):
+    heap = []
+    for pair, freq in pair_counter.items():
+        if freq > 0:
+            heapq.heappush(heap, (-freq, (vocab[pair[0]], vocab[pair[1]]), pair))
+    return heap
+
+
+def pop_best_pair(heap, pair_counter: Counter, vocab: dict[int, bytes]) -> tuple[int, int]:
+    # Lazy deletion: discard stale heap entries until top matches current counter & vocab tie-break key.
+    while True:
+        neg_f, vocab_a, vocab_b, pair = heap[0]
+        cur_f = pair_counter.get(pair, 0)
+        if cur_f <= 0:
+            heapq.heappop(heap)
+            continue
+        if -neg_f != cur_f:
+            heapq.heappop(heap)
+            continue
+        a, b = pair
+        if vocab_a != vocab[a] or vocab_b != vocab[b]:
+            heapq.heappop(heap)
+            continue
+        return pair
 
 
 def merge_pairs(
@@ -335,3 +369,114 @@ def train_bpe(
     # end_time = time.time()
     # print(f"BPE training completed in {end_time - start_time:.2f} seconds.")
     return vocab, merges
+
+
+class BPETokenizer:
+    def __init__(
+        self,
+        vocab: dict[int, bytes],
+        merges: list[tuple[bytes, bytes]],
+        special_tokens: list[str] | None = None,
+    ):
+        self.vocab = vocab
+        self.merges = merges
+        self.special_tokens = special_tokens if special_tokens else []
+        self.special_tokens_bytes = [t.encode("utf-8") for t in self.special_tokens]
+
+        self.vocab_inv = {v: k for k, v in self.vocab.items()}
+
+    def _pre_tokenize(self, text: str) -> list[bytes]:
+        """Pre-tokenize the input text into a list of byte-strings.
+
+        Returns a list where each element is:
+          - the UTF-8 bytes of a special token (e.g. b"<|endoftext|>")
+          - the UTF-8 bytes of a regex token (e.g. b" hello")
+        """
+        parts = split_by_special_tokens(text, self.special_tokens, include_special=True)
+        token_list: list[bytes] = []
+
+        for part in parts:
+            if part == "":
+                continue
+            if part in self.special_tokens:
+                token_list.append(part.encode("utf-8"))
+            else:
+                for tok in re.findall(PAT, part):
+                    # Each regex token becomes a single bytestring.
+                    token_list.append(tok.encode("utf-8"))
+
+        return token_list
+
+    def encode(self, text: str) -> list[int]:
+        byte_tokens = self._pre_tokenize(text)
+
+        # Precompute merge -> new_id once (skip merges that don't exist in vocab_inv)
+        merge_to_new_id: dict[tuple[bytes, bytes], int] = {}
+        for a, b in self.merges:
+            new_id = self.vocab_inv.get(a + b)
+            if new_id is not None:
+                merge_to_new_id[(a, b)] = new_id
+
+        # Convert byte tokens to initial ids (byte-level)
+        token_ids: list[list[int]] = []
+        special_set = set(self.special_tokens_bytes)
+        for btok in byte_tokens:
+            if btok in special_set:
+                token_ids.append([self.vocab_inv[btok]])
+            else:
+                # btok is a bytestring; iterating yields ints, so convert to single-byte bytes keys.
+                token_ids.append([self.vocab_inv[bytes([b])] for b in btok])
+
+        # Apply merges in learned order
+        for i, pretoken in enumerate(token_ids):
+            for a, b in self.merges:
+                new_index = merge_to_new_id.get((a, b))
+                if new_index is None:
+                    continue
+
+                merged: list[int] = []
+                j = 0
+                L = len(pretoken)
+                while j < L:
+                    if j + 1 < L and (self.vocab[pretoken[j]], self.vocab[pretoken[j + 1]]) == (a, b):
+                        merged.append(new_index)
+                        j += 2
+                    else:
+                        merged.append(pretoken[j])
+                        j += 1
+                pretoken = merged
+
+            token_ids[i] = pretoken
+
+        return [idx for pre in token_ids for idx in pre]
+
+    def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
+        # Placeholder for iterable encoding logic
+        for text in iterable:
+            yield from self.encode(text)
+
+    def decode(self, ids: list[int]) -> str:
+        # https://en.wikipedia.org/wiki/Specials_(Unicode_block)#Replacement_character
+
+        tokens = b"".join(self.vocab.get(i, b"\xef\xbf\xbd") for i in ids)
+        return tokens.decode("utf-8", errors="replace")
+
+    @classmethod
+    def from_files(
+        cls, vocab_filepath: str, merges_filepath: str, special_tokens: list[str] | None = None
+    ) -> "BPETokenizer":
+        import json
+
+        with open(vocab_filepath, "r") as vf:
+            vocab_data = json.load(vf)
+            vocab = {int(i): bytes(v, "latin1") for v, i in vocab_data.items()}
+
+        merges = []
+        with open(merges_filepath, "r") as mf:
+            for line in mf:
+                if line.strip() and not line.startswith("#"):
+                    parts = line.strip().split()
+                    if len(parts) == 2:
+                        merges.append((bytes(parts[0], "latin1"), bytes(parts[1], "latin1")))
+
+        return cls(vocab, merges, special_tokens)
