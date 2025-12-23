@@ -17,7 +17,7 @@ TINY_STORIES_PATH = "data/TinyStoriesV2-GPT4-train.txt"
 
 
 if __name__ == "__main__":
-    dataset = TINY_STORIES
+    dataset = OWT
 
     train_bpe(
         dataset["data_path"],

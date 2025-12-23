@@ -25,6 +25,7 @@ from cs336_basics.tokenizer.utils import (
     timeit,
     utf8_bytes_to_string,
 )
+from cs336_basics.utils import print_color
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 NUM_PROCESSES = max(1, (os.cpu_count() or 1) - 4)
@@ -129,7 +130,7 @@ def train_bpe(
         )
 
     if verbose:
-        print(f"Identified {len(chunk_boundaries) - 1} chunks for pre-tokenization.")
+        print_color(f"Identified {len(chunk_boundaries) - 1} chunks for pre-tokenization.")
 
     # 1.2 Count word frequencies across chunks using multiprocessing
     manager = Manager()
@@ -147,7 +148,7 @@ def train_bpe(
         p.join()
 
     if verbose:
-        print("Pre-tokenization processes completed. Aggregating results...")
+        print_color("Pre-tokenization processes completed. Aggregating results...")
 
     word_counter = Counter()
     pairs_freqs = Counter()
@@ -159,7 +160,7 @@ def train_bpe(
         except Empty:
             continue
     if verbose:
-        print(f"Completed pre-tokenization. Vocabulary size: {len(word_counter)} unique tokens.")
+        print_color(f"Completed pre-tokenization. Vocabulary size: {len(word_counter)} unique tokens.")
 
     for word in word_counter:
         for i in range(len(word) - 1):
@@ -205,8 +206,18 @@ class BPETokenizer:
         self.merges = merges
         self.special_tokens = special_tokens if special_tokens else []
         self.special_tokens_bytes = [t.encode("utf-8") for t in self.special_tokens]
+        self.special_set = set(self.special_tokens_bytes)
 
         self.vocab_inv = {v: k for k, v in self.vocab.items()}
+
+        rank: dict[tuple[int, int], int] = {}
+        for r, (a_bytes, b_bytes) in enumerate(self.merges):
+            a_id = self.vocab_inv.get(a_bytes)
+            b_id = self.vocab_inv.get(b_bytes)
+            if a_id is None or b_id is None:
+                continue
+            rank[(a_id, b_id)] = r
+        self.rank = rank
 
     def _pre_tokenize(self, text: str) -> list[bytes]:
         """Pre-tokenize the input text into a list of byte-strings.
@@ -233,45 +244,87 @@ class BPETokenizer:
     def encode(self, text: str) -> list[int]:
         byte_tokens = self._pre_tokenize(text)
 
-        # Precompute merge -> new_id once (skip merges that don't exist in vocab_inv)
-        merge_to_new_id: dict[tuple[bytes, bytes], int] = {}
-        for a, b in self.merges:
-            new_id = self.vocab_inv.get(a + b)
-            if new_id is not None:
-                merge_to_new_id[(a, b)] = new_id
+        def merge_one_pretoken(ids: list[int]) -> list[int]:
+            n = len(ids)
+            if n <= 1:
+                return ids
 
-        # Convert byte tokens to initial ids (byte-level)
-        token_ids: list[list[int]] = []
-        special_set = set(self.special_tokens_bytes)
-        for btok in byte_tokens:
-            if btok in special_set:
-                token_ids.append([self.vocab_inv[btok]])
-            else:
-                # btok is a bytestring; iterating yields ints, so convert to single-byte bytes keys.
-                token_ids.append([self.vocab_inv[bytes([b])] for b in btok])
+            # Doubly-linked list over positions 0..n-1 (positions are stable; nodes get "deleted")
+            prev = [-1] * n
+            nxt = [-1] * n
+            for i in range(n):
+                prev[i] = i - 1
+                nxt[i] = i + 1 if i + 1 < n else -1
 
-        # Apply merges in learned order
-        for i, pretoken in enumerate(token_ids):
-            for a, b in self.merges:
-                new_index = merge_to_new_id.get((a, b))
-                if new_index is None:
+            alive = [True] * n
+
+            # best pair per left-position i: (rank, i)
+
+            heap: list[tuple[int, int]] = []
+
+            def pair_rank(i: int) -> int | None:
+                j = nxt[i]
+                if j == -1 or not alive[i] or not alive[j]:
+                    return None
+                return self.rank.get((ids[i], ids[j]))
+
+            def push_if_valid(i: int):
+                r = pair_rank(i)
+                if r is not None:
+                    heapq.heappush(heap, (r, i))
+
+            for i in range(n):
+                push_if_valid(i)
+
+            # We need to create new ids when merging. We can use vocab_inv on concatenated bytes:
+            # new_id = vocab_inv[vocab[a_id] + vocab[b_id]]
+            # (this should exist because training added these merges to vocab)
+            while heap:
+                r, i = heapq.heappop(heap)
+                j = nxt[i]
+                if j == -1 or not alive[i] or not alive[j]:
+                    continue
+                # stale check: rank might no longer match current neighbor
+                cur_r = self.rank.get((ids[i], ids[j]))
+                if cur_r is None or cur_r != r:
                     continue
 
-                merged: list[int] = []
-                j = 0
-                L = len(pretoken)
-                while j < L:
-                    if j + 1 < L and (self.vocab[pretoken[j]], self.vocab[pretoken[j + 1]]) == (a, b):
-                        merged.append(new_index)
-                        j += 2
-                    else:
-                        merged.append(pretoken[j])
-                        j += 1
-                pretoken = merged
+                # merge i and j into i
+                new_bytes = self.vocab[ids[i]] + self.vocab[ids[j]]
+                new_id = self.vocab_inv[new_bytes]
+                ids[i] = new_id
 
-            token_ids[i] = pretoken
+                # delete j from the linked list
+                alive[j] = False
+                nj = nxt[j]
+                nxt[i] = nj
+                if nj != -1:
+                    prev[nj] = i
 
-        return [idx for pre in token_ids for idx in pre]
+                # Only pairs that can change are around i (prev[i], i) and (i, nxt[i])
+                pi = prev[i]
+                if pi != -1:
+                    push_if_valid(pi)
+                push_if_valid(i)
+
+            # materialize result by walking the linked list
+            out: list[int] = []
+            k = 0
+            while k != -1:
+                if alive[k]:
+                    out.append(ids[k])
+                k = nxt[k]
+            return out
+
+        token_ids: list[int] = []
+        for btok in byte_tokens:
+            if btok in self.special_set:
+                token_ids.append(self.vocab_inv[btok])
+            else:
+                ids = [self.vocab_inv[bytes([b])] for b in btok]
+                token_ids.extend(merge_one_pretoken(ids))
+
+        return token_ids
 
     def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
         # Placeholder for iterable encoding logic
