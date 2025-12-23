@@ -1,11 +1,11 @@
 import gc
+import json
 import random
+from dataclasses import asdict
 
 import numpy as np
 import torch
-
-import json
-from dataclasses import asdict
+from rich import print
 
 
 def seed_everything(seed: int) -> None:
@@ -28,9 +28,5 @@ def get_device() -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-
-def save_config(config: object, filepath: str | ) -> None:
-    with open(filepath, "w") as f:
-        json.dump(asdict(config), f, indent=4)
-        
-    
+def print_color(content: str, color: str = "green"):
+    print(f"[{color}]{content}[/{color}]")
