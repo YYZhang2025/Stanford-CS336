@@ -278,7 +278,7 @@ class BPETokenizer:
 
             for i in range(n):
                 push_if_valid(i)
-                
+
             while heap:
                 r, i = heapq.heappop(heap)
                 j = nxt[i]

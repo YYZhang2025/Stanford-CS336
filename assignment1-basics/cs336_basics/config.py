@@ -4,8 +4,6 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-import torch
-
 
 @dataclass
 class ModelConfig:
@@ -24,8 +22,7 @@ class ModelConfig:
     pre_norm: bool = True
 
     # Special token IDs
-    eos_token_id: int = 2
-    pad_token_id: int = 0
+    eos_token_id: int = 256
 
     # RoPE
     use_rope: bool = True
@@ -64,20 +61,20 @@ class TrainingConfig:
     # Optimizer related parameters
     betas: tuple = field(default=(0.9, 0.98))
     weight_decay: float = 1e-5
-    max_lr: float = 0.001
-    min_lr: float = 1e-4
+    max_lr: float = 3e-4
+    min_lr: float = 1e-5
     warmup_steps: int = 500
     max_grad_norm: float = 1.0
 
     # Logging & checkpointing
     wandb_logging: bool = True
     eval_log_interval: int = 500
-    sampling_log_interval: int = 100
+    sampling_log_interval: int = 200
 
     # Others:
     model_name: str = "tiny_stories_transformer"
     save_checkpoint_dir: str = "checkpoints"
-    device: torch.device = field(default=torch.device("cpu"), repr=False)
+    device: str = "cpu"
     debug_mode: bool = False
     use_mixed_precision: bool = True
     seed: int = 2025

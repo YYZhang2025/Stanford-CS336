@@ -36,12 +36,6 @@ def eval_model(
     state = BatchState(pos=0)
     with torch.no_grad():
         for _ in trange(num_eval_batches):
-            # inputs, targets = data_loading(
-            #     x=original_data,
-            #     batch_size=train_config.batch_size,
-            #     context_length=model.config.max_seq_len,
-            #     device=next(model.parameters()).device,
-            # )
             inputs, targets = data_loading_sequential(
                 x=original_data,
                 batch_size=train_config.batch_size,
@@ -69,6 +63,7 @@ def eval_model(
 
 def train(model: torch.nn.Module, optimizer: torch.optim.Optimizer, train_config: TrainingConfig):
     tokenizer = load_tokenizer_from_dir(train_config.dataset_dir)
+
     # Load training dataset
     original_data = np.memmap(
         train_config.train_data_path,
@@ -110,7 +105,7 @@ def train(model: torch.nn.Module, optimizer: torch.optim.Optimizer, train_config
             alpha_max=train_config.max_lr,
             alpha_min=train_config.min_lr,
             Tw=train_config.warmup_steps,
-            Tc=train_config.num_steps // 2,
+            Tc=train_config.num_steps - train_config.warmup_steps,
         )
         for param_group in optimizer.param_groups:
             param_group["lr"] = lr
@@ -151,12 +146,6 @@ def train(model: torch.nn.Module, optimizer: torch.optim.Optimizer, train_config
             if eval_loss < best_eval_loss:
                 best_eval_loss = eval_loss
                 print_color(f"New best eval loss: {best_eval_loss:.4f}", "yellow")
-                out_dir = os.path.join(
-                    train_config.save_checkpoint_dir,
-                    train_config.model_name,
-                )
-                if not os.path.exists(out_dir):
-                    os.makedirs(out_dir)
                 out_path = os.path.join(
                     train_config.save_checkpoint_dir,
                     train_config.model_name,
@@ -177,8 +166,8 @@ def train(model: torch.nn.Module, optimizer: torch.optim.Optimizer, train_config
                 prompt="Once upon a time",
                 tokenizer=tokenizer,
                 max_new_tokens=256,
-                top_k=10,
-                temperature=1.0,
+                top_k=50,
+                temperature=0.8,
             )
             generated_text = generated_outputs["generated_text"]
             print_color(f"Generated text at step {step + 1}:", "cyan")
