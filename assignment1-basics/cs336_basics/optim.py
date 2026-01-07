@@ -12,29 +12,6 @@ def cosine_annealing_lr(
     Tw: int,
     Tc: int,
 ) -> float:
-    """Cosine annealing LR schedule with linear warmup (LLaMA-style).
-
-    Args:
-        t: current iteration (0-based).
-        alpha_max: maximum learning rate (peak after warmup).
-        alpha_min: minimum/final learning rate.
-        Tw: number of warmup iterations.
-        Tc: final iteration for cosine annealing (inclusive). After Tc, LR is alpha_min.
-
-    Returns:
-        alpha_t according to:
-          - Warmup:        t < Tw  => (t / Tw) * alpha_max
-          - Cosine:  Tw <= t <= Tc => alpha_min + 0.5*(1+cos((t-Tw)/(Tc-Tw)*pi))*(alpha_max-alpha_min)
-          - Post:          t > Tc  => alpha_min
-
-    Notes:
-        Handles edge cases Tw==0 and/or Tc==Tw.
-    """
-    if Tw < 0 or Tc < 0:
-        raise ValueError(f"Tw and Tc must be non-negative, got Tw={Tw}, Tc={Tc}")
-    if t < 0:
-        raise ValueError(f"t must be non-negative, got t={t}")
-
     # Warm-up
     if Tw > 0 and t < Tw:
         return (t / Tw) * alpha_max
@@ -142,15 +119,7 @@ def gradient_clip(
     max_l2_norm: float,
     eps: float = 1e-6,
 ) -> None:
-    """Clips gradients of the given parameters to have a maximum L2 norm.
-
-    Args:
-        parameters: Iterable of model parameters to clip.
-        max_l2_norm: Maximum allowed L2 norm for the gradients.
-
-    Returns:
-        None. The gradients are modified in place.
-    """
+    # Calculate L2-Norm
     total_norm = 0.0
     for p in parameters:
         if p.grad is not None:
@@ -158,6 +127,7 @@ def gradient_clip(
             total_norm += param_norm.item() ** 2
     total_norm = total_norm**0.5
 
+    # Update gradient value accroding to the factor
     clip_coef = max_l2_norm / (total_norm + eps)
     if clip_coef < 1.0:
         for p in parameters:

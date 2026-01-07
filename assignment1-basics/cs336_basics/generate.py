@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 
-from cs336_basics.tokenizer.tokenizer import load_tokenizer_from_dir
+from cs336_basics.tokenizer.tokenizer import BPETokenizer
 
 
 def top_p_sampling(logits: torch.Tensor, top_p: float) -> torch.Tensor:
@@ -61,16 +61,13 @@ def top_k_sampling(
 def generate(
     model: torch.nn.Module,
     prompt: torch.Tensor | str,
-    tokenizer_dir: str = "./datasets/tiny_stories",
+    tokenizer: BPETokenizer,
     max_new_tokens: int = 256,
-    top_k: float = 0.0,
+    top_k: int = 0,
     top_p: float = 0.0,
     temperature: float = 1.0,
 ) -> dict:
     model.eval()
-    # Load Tokenizer
-    tokenizer = load_tokenizer_from_dir(tokenizer_dir)
-
     if isinstance(prompt, str):
         out = tokenizer.encode(prompt)
         input_ids = out.ids if hasattr(out, "ids") else out  # List[int]

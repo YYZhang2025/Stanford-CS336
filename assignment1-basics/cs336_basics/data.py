@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 import numpy as np
@@ -13,7 +11,7 @@ def get_batch(
     device: str | torch.device,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     n = int(x.shape[0])
-    x_t = torch.as_tensor(x, dtype=torch.long)
+    x_t = torch.as_tensor(x)
 
     # Valid start indices t satisfy: t + context_length < n  =>  t in [0, n-context_length-1]
     # torch.randint uses an exclusive high bound.
@@ -84,9 +82,14 @@ def get_batch_sequential(
     # Advance cursor by a whole batch.
     state.pos = int((state.pos + batch_size * int(stride)) % (max_start + 1))
 
-    return inputs.pin_memory().to(device, non_blocking=True), targets.pin_memory().to(
-        device, non_blocking=True
-    )
+    if (isinstance(device, torch.device) and device.type == "cuda") or (
+        isinstance(device, str) and "cuda" in device.lower()
+    ):
+        return inputs.pin_memory().to(device, non_blocking=True, dtype=torch.long), targets.pin_memory().to(
+            device, non_blocking=True, dtype=torch.long
+        )
+    else:
+        return inputs.to(device, dtype=torch.long), targets.to(device, dtype=torch.long)
 
 
 def data_loading_sequential(

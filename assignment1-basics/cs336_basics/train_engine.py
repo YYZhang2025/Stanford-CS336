@@ -6,10 +6,11 @@ from tqdm import trange
 
 import wandb
 from cs336_basics.config import TrainingConfig
-from cs336_basics.data import BatchState, data_loading, data_loading_sequential
+from cs336_basics.data import BatchState, data_loading_sequential
 from cs336_basics.generate import generate
 from cs336_basics.loss import cross_entropy, perplexity
-from cs336_basics.optim import cosine_annealing_lr
+from cs336_basics.optim import cosine_annealing_lr, gradient_clip
+from cs336_basics.tokenizer.tokenizer import load_tokenizer_from_dir
 from cs336_basics.utils import clear_memory, get_ctx, print_color, save_checkpoint
 
 
@@ -17,6 +18,7 @@ from cs336_basics.utils import clear_memory, get_ctx, print_color, save_checkpoi
 def eval_model(
     model: torch.nn.Module,
     train_config: TrainingConfig,
+    step: int = 0,
 ):
     model.eval()
 
@@ -60,30 +62,19 @@ def eval_model(
     eval_loss = torch.tensor(eval_loss / num_eval_batches)
     eval_perplexity = torch.tensor(eval_perplexity / num_eval_batches)
 
-    # Logging
-    if train_config.wandb_logging:
-        wandb.log({"eval/loss": eval_loss.item()})
-        wandb.log({"eval/perplexity": eval_perplexity.item()})
-
     model.train()
 
-    return eval_loss
+    return eval_loss, eval_perplexity
 
 
 def train(model: torch.nn.Module, optimizer: torch.optim.Optimizer, train_config: TrainingConfig):
+    tokenizer = load_tokenizer_from_dir(train_config.dataset_dir)
     # Load training dataset
     original_data = np.memmap(
         train_config.train_data_path,
         dtype=np.uint16,
         mode="r+",
     )
-
-    # dataloader = data_loading(
-    #     x=original_data,
-    #     batch_size=train_config.batch_size,
-    #     context_length=model.config.max_seq_len,
-    #     device=train_config.device,
-    # )
 
     best_eval_loss = float("inf")
     ctx = get_ctx(train_config.use_mixed_precision, train_config.device)
@@ -110,6 +101,10 @@ def train(model: torch.nn.Module, optimizer: torch.optim.Optimizer, train_config
         # Backward pass and optimization step
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
+        # Gradient clipping
+        gradient_clip(model.parameters(), max_l2_norm=train_config.max_grad_norm)
+
+        # Learning rate scheduling
         lr = cosine_annealing_lr(
             t=step,
             alpha_max=train_config.max_lr,
@@ -123,17 +118,36 @@ def train(model: torch.nn.Module, optimizer: torch.optim.Optimizer, train_config
 
         # Logging
         if train_config.wandb_logging:
-            wandb.log({"train/loss": loss.item(), "step": step})
-            wandb.log({"train/perplexity": perplexity(loss).item(), "step": step})
-            wandb.log({"train/lr": lr, "step": step})
+            wandb.log(
+                {
+                    "train/loss": loss.item(),
+                    "train/perplexity": perplexity(loss).item(),
+                    "train/lr": lr,
+                },
+                step=step + 1,
+            )
 
         print_color(
             f"Step {step + 1}/{train_config.num_steps}, Loss: {loss.item():.4f}, LR: {lr:.6f}", "green"
         )
 
         if train_config.eval_log_interval > 0 and (step + 1) % train_config.eval_log_interval == 0:
+            # Cleanup
+            del inputs, targets, logits, loss
+            clear_memory()
+
             print_color("Evaluating model...", "blue")
-            eval_loss = eval_model(model, train_config)
+            eval_loss, eval_perplexity = eval_model(model, train_config, step + 1)
+            wandb.log(
+                {
+                    "eval/loss": eval_loss.item(),
+                    "eval/perplexity": eval_perplexity.item(),
+                },
+                step=step + 1,
+            )
+            print_color(
+                f"Eval Loss: {eval_loss.item():.4f}, Eval Perplexity: {eval_perplexity.item():.4f}", "blue"
+            )
             if eval_loss < best_eval_loss:
                 best_eval_loss = eval_loss
                 print_color(f"New best eval loss: {best_eval_loss:.4f}", "yellow")
@@ -161,19 +175,12 @@ def train(model: torch.nn.Module, optimizer: torch.optim.Optimizer, train_config
             generated_outputs = generate(
                 model=model,
                 prompt="Once upon a time",
-                tokenizer_dir=train_config.dataset_dir,
+                tokenizer=tokenizer,
                 max_new_tokens=256,
                 top_k=10,
                 temperature=1.0,
             )
             generated_text = generated_outputs["generated_text"]
-            all_text = generated_outputs["all_text"]
             print_color(f"Generated text at step {step + 1}:", "cyan")
             print("Once upon a time", end="")
             print_color(f"{generated_text}\n", "cyan")
-
-            if train_config.wandb_logging:
-                wandb.log({"generated/tokens": all_text, "step": step})
-
-        del inputs, targets, logits, loss
-        clear_memory()
