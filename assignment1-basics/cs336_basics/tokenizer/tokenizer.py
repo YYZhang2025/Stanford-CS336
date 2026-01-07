@@ -6,8 +6,9 @@ from collections.abc import Iterable, Iterator
 from multiprocessing import Manager, Process, Queue
 from queue import Empty
 
+import numpy as np
 import regex as re
-from tqdm import trange
+from tqdm import tqdm, trange
 
 from cs336_basics.tokenizer.merge_fn import (
     build_pair_heap,
@@ -183,6 +184,10 @@ def train_bpe(
 
     if kwargs.get("save_path"):
         save_vocab_and_merges(vocab, merges, kwargs["save_path"])
+        with open(os.path.join(kwargs["save_path"], "special_tokens.txt"), "w", encoding="utf-8") as f:
+            if special_tokens:
+                for token in special_tokens:
+                    f.write(f"{token}\n")
 
     return vocab, merges
 
@@ -218,6 +223,8 @@ class BPETokenizer:
 
         self.rank = rank
         self.merge_to_new_id = merge_to_new_id
+
+        self.eos_token_id = self.vocab_inv.get(b"<|endoftext|>", None)
 
     def _pre_tokenize(self, text: str) -> list[bytes]:
         """Pre-tokenize the input text into a list of byte-strings.
@@ -342,7 +349,7 @@ class BPETokenizer:
 
     @classmethod
     def from_files(
-        cls, vocab_filepath: str, merges_filepath: str, special_tokens: list[str] | None = None
+        cls, vocab_filepath: str, merges_filepath: str, special_tokens: list[str] | str | None = None
     ) -> "BPETokenizer":
         with open(vocab_filepath, "r") as vf:
             vocab_data = json.load(vf)
@@ -358,4 +365,39 @@ class BPETokenizer:
                     if len(parts) == 2:
                         merges.append((bytes(parts[0], "latin1"), bytes(parts[1], "latin1")))
 
-        return cls(vocab, merges, special_tokens)
+        if isinstance(special_tokens, str):
+            with open(special_tokens, "r", encoding="utf-8") as stf:
+                special_tokens_list = [line.strip() for line in stf if line.strip()]
+        elif isinstance(special_tokens, list):
+            special_tokens_list = special_tokens
+        else:
+            special_tokens_list = []
+
+        return cls(vocab, merges, special_tokens_list)
+
+
+def encode_file_to_bin(tokenizer, text_path, out_bin_path, dtype=np.uint16):
+    total_bytes = os.path.getsize(text_path)
+    processed_bytes = 0
+    processed_chunks = 0
+
+    with open(text_path, "r", encoding="utf-8") as f_in, open(out_bin_path, "wb") as f_out:
+        p_bar = tqdm(total=total_bytes, desc="Encoding to binary", unit="B", unit_scale=True)
+
+        for line in f_in:
+            token_ids = tokenizer.encode(line)
+            arr = np.array(token_ids, dtype=dtype)
+            arr.tofile(f_out)
+
+            processed_bytes += len(line.encode("utf-8"))
+            processed_chunks += 1
+
+            p_bar.update(len(line.encode("utf-8")))
+
+
+def load_tokenizer_from_dir(dir_path: str) -> BPETokenizer:
+    vocab_path = os.path.join(dir_path, "vocab.json")
+    merges_path = os.path.join(dir_path, "merges.txt")
+    special_tokens_path = os.path.join(dir_path, "special_tokens.txt")
+    tokenizer = BPETokenizer.from_files(vocab_path, merges_path, special_tokens_path)
+    return tokenizer

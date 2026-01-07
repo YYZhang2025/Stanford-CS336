@@ -42,11 +42,16 @@ class TransformerLM(nn.Module):
         self.final_norm = RMSNorm(config.d_model)
         self.output_linear = Linear(config.d_model, config.vocab_size)
 
+    @property
+    def device(self) -> torch.device:
+        return next(self.parameters()).device
+
     def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None) -> torch.Tensor:
         x = self.token_embedding(x)
 
         for layer in self.layers:
             x = layer(x, token_positions=token_positions)
+
         x = self.final_norm(x)
         logits = self.output_linear(x)
         return logits

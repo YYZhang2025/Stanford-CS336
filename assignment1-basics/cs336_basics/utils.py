@@ -1,9 +1,8 @@
 import gc
-import json
 import os
 import random
 import typing
-from dataclasses import asdict
+from contextlib import nullcontext
 
 import numpy as np
 import torch
@@ -26,12 +25,50 @@ def clear_memory() -> None:
         torch.cuda.empty_cache()
 
 
-def get_device() -> torch.device:
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def get_device(verbose: bool = True) -> torch.device:
+    if torch.cuda.is_available():
+        if verbose:
+            print_color("Using CUDA device", "blue")
+        return torch.device("cuda")
+    elif torch.backends.mps.is_available():
+        if verbose:
+            print_color("Using MPS device", "blue")
+        return torch.device("mps")
+    else:
+        if verbose:
+            print_color("Using CPU device", "blue")
+        return torch.device("cpu")
 
 
 def print_color(content: str, color: str = "green"):
     print(f"[{color}]{content}[/{color}]")
+
+
+def get_ctx(use_mixed: bool, device: torch.device, amp_mode: str = "auto", verbose: bool = False):
+    if not use_mixed or amp_mode == "off":
+        if verbose:
+            print("Not using autocast context")
+        return nullcontext()
+
+    dev = device.type
+
+    if amp_mode == "fp16":
+        dtype = torch.float16
+    elif amp_mode == "bf16":
+        dtype = torch.bfloat16
+    else:
+        if dev == "cuda":
+            dtype = torch.bfloat16
+        elif dev == "mps":
+            dtype = torch.float16
+        elif dev == "cpu":
+            dtype = torch.float16
+        else:
+            return nullcontext()
+
+    if verbose:
+        print(f"Using autocast with dtype={dtype} on device={dev}")
+    return torch.autocast(device_type=dev, dtype=dtype)
 
 
 def save_checkpoint(
@@ -46,6 +83,7 @@ def save_checkpoint(
         "optimizer_state_dict": optimizer.state_dict(),
         "iteration": iteration,
     }
+
     torch.save(state, out)
 
     if verbose:

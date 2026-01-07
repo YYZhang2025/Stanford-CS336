@@ -30,7 +30,7 @@ class RoPEEmbedding(nn.Module):
         if token_positions is None:
             seq_len = x.shape[-2]
             token_positions = torch.arange(seq_len, device=x.device)
-            token_positions = token_positions.unsqueeze(0).expand(x.size(0), -1)
+            token_positions = token_positions.unsqueeze(0)
 
         theta = torch.einsum("...i , j -> ... i j", token_positions, self.inv_freq)
         cos = torch.cos(theta).repeat_interleave(2, dim=-1)

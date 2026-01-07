@@ -20,6 +20,8 @@ dependencies = [
     "wandb>=0.19.7",
     "ty>=0.0.1a16",
     "scalene>=1.5.55",
+    "fire>=0.7.1",
+    "dotenv>=0.9.9",
 ]
 
 [build-system]

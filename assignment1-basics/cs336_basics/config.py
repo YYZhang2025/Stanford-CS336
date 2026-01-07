@@ -3,17 +3,19 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Dict, Mapping, Union
 
+import torch
+
 
 @dataclass
 class ModelConfig:
     vocab_size: int = 10000
-    max_seq_len: int = 512
+    max_seq_len: int = 256
 
     d_model: int = 512
-    d_ff: int = 2048
+    d_ff: int = 1344
 
-    num_heads: int = 8
-    num_layers: int = 6
+    num_heads: int = 16
+    num_layers: int = 4
 
     dropout: float = 0.1
 
@@ -56,20 +58,36 @@ class ModelConfig:
 
 @dataclass
 class TrainingConfig:
-    batch_size: int = 64
+    batch_size: int = 128
+    num_steps: int = 10000
+    train_data_path: str = "datasets/tiny_stories/train.bin"
+    eval_data_path: str = "datasets/tiny_stories/eval.bin"
 
-    # Learning rate scheduler parameters
-    lr_scheduler_type: str = "linear"  # Options: "linear", "cos
+    # Optimizer related parameters
+    betas: tuple = field(default=(0.9, 0.98))
+    weight_decay: float = 1e-5
+    lr_scheduler_type: str = "cos"  # Options: "linear", "cos
     learning_rate: float = 0.001
     warmup_steps: int = 500
 
-    # AdamW related parameters
-    betas: tuple = field(default=(0.9, 0.98))
-    weight_decay: float = 1e-5
+    # Logging & checkpointing
+    wandb_logging: bool = True
+    eval_log_interval: int = 1000
+    sampling_log_interval: int = 100
 
-    # WandB logging flag
-    wandb_logging: bool = False
-    log_interval: int = 100
+    # Others:
+    model_name: str = "tiny_stories_transformer"
+    save_checkpoint_dir: str = "checkpoints"
+    device: torch.device = field(default=torch.device("cpu"), repr=False)
+    debug_mode: bool = False
+    use_mixed_precision: bool = True
+
+    def __post_init__(self):
+        # Validate lr_scheduler_type
+        if self.debug_mode:
+            self.num_steps = 100
+            self.batch_size = 8
+            self.train_data_path = "datasets/tiny_stories/eval.bin"
 
     @classmethod
     def from_json(cls, path: str | Path) -> "TrainingConfig":
