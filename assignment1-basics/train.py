@@ -47,7 +47,7 @@ def main(
     # Initialize optimizer
     optimizer = AdamW(
         model.parameters(),
-        lr=train_config.learning_rate,
+        lr=train_config.min_lr,
         betas=train_config.betas,
         weight_decay=train_config.weight_decay,
     )

@@ -64,9 +64,8 @@ class TrainingConfig:
     # Optimizer related parameters
     betas: tuple = field(default=(0.9, 0.98))
     weight_decay: float = 1e-5
-    # lr_scheduler_type: str = "cos"  # Options: "linear", "cos
     max_lr: float = 0.001
-    min_lr: float = 1e-5
+    min_lr: float = 1e-4
     warmup_steps: int = 500
 
     # Logging & checkpointing

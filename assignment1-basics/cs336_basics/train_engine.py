@@ -125,8 +125,11 @@ def train(model: torch.nn.Module, optimizer: torch.optim.Optimizer, train_config
         if train_config.wandb_logging:
             wandb.log({"train/loss": loss.item(), "step": step})
             wandb.log({"train/perplexity": perplexity(loss).item(), "step": step})
+            wandb.log({"train/lr": lr, "step": step})
 
-        print_color(f"Step {step + 1}/{train_config.num_steps}, Loss: {loss.item():.4f}", "green")
+        print_color(
+            f"Step {step + 1}/{train_config.num_steps}, Loss: {loss.item():.4f}, LR: {lr:.6f}", "green"
+        )
 
         if train_config.eval_log_interval > 0 and (step + 1) % train_config.eval_log_interval == 0:
             print_color("Evaluating model...", "blue")
