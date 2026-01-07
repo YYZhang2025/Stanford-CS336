@@ -17,6 +17,16 @@ def main(
     # Load configs
     train_config = TrainingConfig.from_json(train_config_json) if train_config_json else TrainingConfig()
     model_config = ModelConfig.from_json(model_config_json) if model_config_json else ModelConfig()
+    # Save configs
+    out_dir = os.path.join(
+        train_config.save_checkpoint_dir,
+        train_config.model_name,
+    )
+    if not os.path.exists(out_dir):
+        os.makedirs(out_dir)
+    model_config.to_json(os.path.join(out_dir, "model_config.json"))
+    train_config.to_json(os.path.join(out_dir, "train_config.json"))
+
     train_config.device = get_device()
 
     # Load environment and set WanDB config

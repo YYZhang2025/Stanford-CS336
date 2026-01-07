@@ -18,7 +18,6 @@ from cs336_basics.utils import clear_memory, get_ctx, print_color, save_checkpoi
 def eval_model(
     model: torch.nn.Module,
     train_config: TrainingConfig,
-    step: int = 0,
 ):
     model.eval()
 
@@ -30,6 +29,8 @@ def eval_model(
         dtype=np.uint16,
         mode="r+",
     )
+    x = torch.from_numpy(original_data)
+
     total_tokens = len(original_data)
     num_eval_batches = total_tokens // (train_config.batch_size * model.config.max_seq_len)
 
@@ -37,7 +38,7 @@ def eval_model(
     with torch.no_grad():
         for _ in trange(num_eval_batches):
             inputs, targets = data_loading_sequential(
-                x=original_data,
+                x=x,
                 batch_size=train_config.batch_size,
                 context_length=model.config.max_seq_len,
                 device=next(model.parameters()).device,
@@ -70,6 +71,7 @@ def train(model: torch.nn.Module, optimizer: torch.optim.Optimizer, train_config
         dtype=np.uint16,
         mode="r+",
     )
+    x = torch.from_numpy(original_data)
 
     best_eval_loss = float("inf")
     ctx = get_ctx(train_config.use_mixed_precision, train_config.device)
@@ -79,7 +81,7 @@ def train(model: torch.nn.Module, optimizer: torch.optim.Optimizer, train_config
     for step in range(train_config.num_steps):
         # inputs, targets = dataloader
         inputs, targets = data_loading_sequential(
-            x=original_data,
+            x=x,
             batch_size=train_config.batch_size,
             context_length=model.config.max_seq_len,
             device=train_config.device,
