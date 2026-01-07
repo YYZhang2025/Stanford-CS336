@@ -1,7 +1,8 @@
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any, Dict, Mapping, Union
+from typing import Any
 
 import torch
 
@@ -32,7 +33,6 @@ class ModelConfig:
 
     @classmethod
     def from_json(cls, path: str | Path) -> "ModelConfig":
-        """Load a ModelConfig from a JSON file."""
         path = Path(path)
         with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
@@ -40,17 +40,14 @@ class ModelConfig:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ModelConfig":
-        """Create a ModelConfig from a mapping, ignoring unknown keys."""
         allowed = {f.name for f in fields(cls)}
-        filtered: Dict[str, Any] = {k: v for k, v in dict(data).items() if k in allowed}
+        filtered: dict[str, Any] = {k: v for k, v in dict(data).items() if k in allowed}
         return cls(**filtered)
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Serialize this config to a plain Python dict."""
+    def to_dict(self) -> dict[str, Any]:
         return {f.name: getattr(self, f.name) for f in fields(self)}
 
     def to_json(self, path: str | Path, *, indent: int = 2) -> None:
-        """Write this config to a JSON file."""
         path = Path(path)
         with path.open("w", encoding="utf-8") as f:
             json.dump(self.to_dict(), f, ensure_ascii=False, indent=indent)
@@ -58,8 +55,8 @@ class ModelConfig:
 
 @dataclass
 class TrainingConfig:
-    batch_size: int = 128
-    num_steps: int = 10000
+    batch_size: int = 256
+    num_steps: int = 5000
     dataset_dir: str = "datasets/tiny_stories"
     train_data_path: str = "datasets/tiny_stories/train.bin"
     eval_data_path: str = "datasets/tiny_stories/eval.bin"
@@ -73,7 +70,7 @@ class TrainingConfig:
 
     # Logging & checkpointing
     wandb_logging: bool = True
-    eval_log_interval: int = 1000
+    eval_log_interval: int = 500
     sampling_log_interval: int = 100
 
     # Others:
@@ -82,7 +79,7 @@ class TrainingConfig:
     device: torch.device = field(default=torch.device("cpu"), repr=False)
     debug_mode: bool = False
     use_mixed_precision: bool = True
-    seed: int = 42
+    seed: int = 2025
 
     def __post_init__(self):
         # Validate lr_scheduler_type
@@ -93,7 +90,6 @@ class TrainingConfig:
 
     @classmethod
     def from_json(cls, path: str | Path) -> "TrainingConfig":
-        """Load a TrainingConfig from a JSON file."""
         path = Path(path)
         with path.open("r", encoding="utf-8") as f:
             data = json.load(f)
@@ -101,17 +97,14 @@ class TrainingConfig:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "TrainingConfig":
-        """Create a TrainingConfig from a mapping, ignoring unknown keys."""
         allowed = {f.name for f in fields(cls)}
-        filtered: Dict[str, Any] = {k: v for k, v in dict(data).items() if k in allowed}
+        filtered: dict[str, Any] = {k: v for k, v in dict(data).items() if k in allowed}
         return cls(**filtered)
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Serialize this config to a plain Python dict."""
+    def to_dict(self) -> dict[str, Any]:
         return {f.name: getattr(self, f.name) for f in fields(self)}
 
     def to_json(self, path: str | Path, *, indent: int = 2) -> None:
-        """Write this config to a JSON file."""
         path = Path(path)
         with path.open("w", encoding="utf-8") as f:
             json.dump(self.to_dict(), f, ensure_ascii=False, indent=indent)

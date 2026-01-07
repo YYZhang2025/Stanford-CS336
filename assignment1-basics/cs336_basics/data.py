@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import torch
 
@@ -10,29 +12,7 @@ def get_batch(
     context_length: int,
     device: str | torch.device,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Sample a batch of (inputs, targets) from a 1D token stream.
-
-    Given a single tokenized sequence x = (x1, ..., xn) as a 1D numpy integer array,
-    we sample `batch_size` starting positions and return:
-      - inputs:  x[t : t+context_length]
-      - targets: x[t+1 : t+context_length+1]
-
-    Both outputs have shape (batch_size, context_length), dtype torch.long, and are
-    moved to `device`.
-    """
-    if x.ndim != 1:
-        raise ValueError(f"x must be a 1D numpy array of token ids, got shape {x.shape}")
-    if batch_size <= 0:
-        raise ValueError(f"batch_size must be positive, got {batch_size}")
-    if context_length <= 0:
-        raise ValueError(f"context_length must be positive, got {context_length}")
-
     n = int(x.shape[0])
-    # Need at least one next-token target for each position in the context window.
-    if n <= context_length:
-        raise ValueError(f"Token stream too short: len(x)={n} must be > context_length={context_length}")
-
-    # Convert once on CPU; indexing happens on CPU and then we move to device.
     x_t = torch.as_tensor(x, dtype=torch.long)
 
     # Valid start indices t satisfy: t + context_length < n  =>  t in [0, n-context_length-1]
@@ -59,3 +39,61 @@ def data_loading(
     device: str | torch.device,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     return get_batch(x, batch_size, context_length, device)
+
+
+# --- Sequential/traversal batching ---
+
+
+@dataclass
+class BatchState:
+    pos: int = 0
+
+
+def get_batch_sequential(
+    x: np.ndarray,
+    batch_size: int,
+    context_length: int,
+    device: str | torch.device,
+    state: BatchState,
+    *,
+    stride: int | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    n = int(x.shape[0])
+    if stride is None:
+        stride = context_length
+
+    # Max valid start t satisfies: t + context_length < n
+    max_start = n - context_length - 1
+    if max_start < 0:
+        raise ValueError(
+            f"Sequence too short: n={n}, context_length={context_length}. Need n >= context_length+1."
+        )
+
+    x_t = torch.as_tensor(x, dtype=torch.long)
+
+    # Deterministic starts based on current cursor.
+    starts = state.pos + torch.arange(batch_size, dtype=torch.long) * int(stride)
+    starts = starts % (max_start + 1)
+
+    offsets = torch.arange(context_length, dtype=torch.long).unsqueeze(0)  # (1, m)
+    idx = starts.unsqueeze(1) + offsets  # (B, m)
+
+    inputs = x_t[idx]
+    targets = x_t[idx + 1]
+
+    # Advance cursor by a whole batch.
+    state.pos = int((state.pos + batch_size * int(stride)) % (max_start + 1))
+
+    return inputs.to(device), targets.to(device)
+
+
+def data_loading_sequential(
+    x: np.ndarray,
+    batch_size: int,
+    context_length: int,
+    device: str | torch.device,
+    state: BatchState,
+    *,
+    stride: int | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    return get_batch_sequential(x, batch_size, context_length, device, state, stride=stride)

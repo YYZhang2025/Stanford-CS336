@@ -12,10 +12,6 @@ from tqdm import tqdm, trange
 
 from cs336_basics.tokenizer.merge_fn import (
     build_pair_heap,
-    get_most_frequent_pair,
-    merge_pairs,
-    merge_pairs_incremental,
-    merge_pairs_with_heap,
     merge_pairs_with_heap_index,
     pop_best_pair,
 )
@@ -24,7 +20,6 @@ from cs336_basics.tokenizer.utils import (
     save_vocab_and_merges,
     string_to_bytes,
     timeit,
-    utf8_bytes_to_string,
 )
 from cs336_basics.utils import print_color
 
@@ -180,6 +175,7 @@ def train_bpe(
         word_counter, pairs_freqs, pair_heap, pair_to_words = merge_pairs_with_heap_index(
             word_counter, pairs_freqs, most_frequent_pair, new_id, vocab, pair_heap, pair_to_words
         )
+
         merges.append((vocab[most_frequent_pair[0]], vocab[most_frequent_pair[1]]))
 
     if kwargs.get("save_path"):
@@ -282,10 +278,7 @@ class BPETokenizer:
 
             for i in range(n):
                 push_if_valid(i)
-
-            # We need to create new ids when merging. We can use vocab_inv on concatenated bytes:
-            # new_id = vocab_inv[vocab[a_id] + vocab[b_id]]
-            # (this should exist because training added these merges to vocab)
+                
             while heap:
                 r, i = heapq.heappop(heap)
                 j = nxt[i]
@@ -351,12 +344,12 @@ class BPETokenizer:
     def from_files(
         cls, vocab_filepath: str, merges_filepath: str, special_tokens: list[str] | str | None = None
     ) -> "BPETokenizer":
-        with open(vocab_filepath, "r") as vf:
+        with open(vocab_filepath) as vf:
             vocab_data = json.load(vf)
             vocab = {int(i): bytes(v, "latin1") for v, i in vocab_data.items()}
 
         merges = []
-        with open(merges_filepath, "r") as mf:
+        with open(merges_filepath) as mf:
             # Skip the first line (header)
             next(mf)
             for line in mf:
@@ -366,7 +359,7 @@ class BPETokenizer:
                         merges.append((bytes(parts[0], "latin1"), bytes(parts[1], "latin1")))
 
         if isinstance(special_tokens, str):
-            with open(special_tokens, "r", encoding="utf-8") as stf:
+            with open(special_tokens, encoding="utf-8") as stf:
                 special_tokens_list = [line.strip() for line in stf if line.strip()]
         elif isinstance(special_tokens, list):
             special_tokens_list = special_tokens
@@ -381,7 +374,7 @@ def encode_file_to_bin(tokenizer, text_path, out_bin_path, dtype=np.uint16):
     processed_bytes = 0
     processed_chunks = 0
 
-    with open(text_path, "r", encoding="utf-8") as f_in, open(out_bin_path, "wb") as f_out:
+    with open(text_path, encoding="utf-8") as f_in, open(out_bin_path, "wb") as f_out:
         p_bar = tqdm(total=total_bytes, desc="Encoding to binary", unit="B", unit_scale=True)
 
         for line in f_in:

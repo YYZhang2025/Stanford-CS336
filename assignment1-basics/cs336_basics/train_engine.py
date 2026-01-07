@@ -6,7 +6,7 @@ from tqdm import trange
 
 import wandb
 from cs336_basics.config import TrainingConfig
-from cs336_basics.data import data_loading
+from cs336_basics.data import BatchState, data_loading, data_loading_sequential
 from cs336_basics.generate import generate
 from cs336_basics.loss import cross_entropy, perplexity
 from cs336_basics.utils import clear_memory, get_ctx, print_color, save_checkpoint
@@ -25,18 +25,26 @@ def eval_model(
     original_data = np.memmap(
         train_config.eval_data_path,
         dtype=np.uint16,
-        mode="r",
+        mode="r+",
     )
     total_tokens = len(original_data)
     num_eval_batches = total_tokens // (train_config.batch_size * model.config.max_seq_len)
 
+    state = BatchState(pos=0)
     with torch.no_grad():
         for _ in trange(num_eval_batches):
-            inputs, targets = data_loading(
+            # inputs, targets = data_loading(
+            #     x=original_data,
+            #     batch_size=train_config.batch_size,
+            #     context_length=model.config.max_seq_len,
+            #     device=next(model.parameters()).device,
+            # )
+            inputs, targets = data_loading_sequential(
                 x=original_data,
                 batch_size=train_config.batch_size,
                 context_length=model.config.max_seq_len,
                 device=next(model.parameters()).device,
+                state=state,
             )
 
             # Forward pass
@@ -66,22 +74,30 @@ def train(model: torch.nn.Module, optimizer: torch.optim.Optimizer, train_config
     original_data = np.memmap(
         train_config.train_data_path,
         dtype=np.uint16,
-        mode="r",
+        mode="r+",
     )
 
-    dataloader = data_loading(
-        x=original_data,
-        batch_size=train_config.batch_size,
-        context_length=model.config.max_seq_len,
-        device=train_config.device,
-    )
+    # dataloader = data_loading(
+    #     x=original_data,
+    #     batch_size=train_config.batch_size,
+    #     context_length=model.config.max_seq_len,
+    #     device=train_config.device,
+    # )
 
     best_eval_loss = float("inf")
     ctx = get_ctx(train_config.use_mixed_precision, train_config.device)
 
     # Training loop
+    state = BatchState(pos=0)
     for step in range(train_config.num_steps):
-        inputs, targets = dataloader
+        # inputs, targets = dataloader
+        inputs, targets = data_loading_sequential(
+            x=original_data,
+            batch_size=train_config.batch_size,
+            context_length=model.config.max_seq_len,
+            device=train_config.device,
+            state=state,
+        )
 
         # Forward pass
         with ctx:
@@ -133,8 +149,8 @@ def train(model: torch.nn.Module, optimizer: torch.optim.Optimizer, train_config
                 model=model,
                 prompt="Once upon a time",
                 tokenizer_dir=train_config.dataset_dir,
-                max_new_tokens=50,
-                top_k=50,
+                max_new_tokens=256,
+                top_k=10,
                 temperature=1.0,
             )
             generated_text = generated_outputs["generated_text"]

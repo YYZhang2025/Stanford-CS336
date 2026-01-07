@@ -235,8 +235,6 @@ def merge_pairs_with_heap(
 
 
 # Version 4:
-
-
 def merge_pairs_with_heap_index(
     word_counter: dict[tuple[int, ...], int],
     pair_counter: Counter,
