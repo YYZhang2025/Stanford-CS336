@@ -2,7 +2,8 @@
 <h1 align="center">My SOLUTION to <br/>
 CS336: Language Modeling from Scratch <br/>
 (Spring 2025 Version)</h1>
-This repository contains my notes and solutions for the [Stanford CS336: Language Modeling from Scratch](https://stanford-cs336.github.io/spring2025/). I also created a website containing more details of the lectures. If you are interested, please go to visited this [website](https://yyzhang2025.github.io/posts/LearningNotes/CS336/). 
+
+This repository contains my notes and solutions for the [Stanford CS336: Language Modeling from Scratch](https://stanford-cs336.github.io/spring2025). I also created a website containing more details of the lectures. If you are interested, please go to visited this [website](https://yyzhang2025.github.io/posts/LearningNotes/CS336)
 
 
 
