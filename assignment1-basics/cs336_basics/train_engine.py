@@ -132,7 +132,7 @@ def train(model: torch.nn.Module, optimizer: torch.optim.Optimizer, train_config
             generated_outputs = generate(
                 model=model,
                 prompt="Once upon a time",
-                tokenizer_dir="./datasets/tiny_stories",
+                tokenizer_dir=train_config.dataset_dir,
                 max_new_tokens=50,
                 top_k=50,
                 temperature=1.0,

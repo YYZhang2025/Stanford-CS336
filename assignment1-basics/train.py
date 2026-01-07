@@ -7,7 +7,7 @@ from cs336_basics.config import ModelConfig, TrainingConfig
 from cs336_basics.model import TransformerLM
 from cs336_basics.optim import AdamW
 from cs336_basics.train_engine import train
-from cs336_basics.utils import get_device, print_color
+from cs336_basics.utils import get_device, print_color, seed_everything
 
 
 def main(
@@ -30,11 +30,14 @@ def main(
         wandb.login(key=wandb_api)
         wandb.init(
             project="cs336-basics-assignment1",
+            name=train_config.model_name + f"_batch-{train_config.batch_size}_steps-{train_config.num_steps}",
             config={
                 "model_config": model_config.to_dict(),
                 "train_config": train_config.to_dict(),
             },
         )
+
+    seed_everything(train_config.seed)
 
     # Initialize model
     model = TransformerLM(model_config)

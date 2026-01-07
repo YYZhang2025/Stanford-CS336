@@ -62,8 +62,8 @@ def generate(
     model: torch.nn.Module,
     prompt: torch.Tensor | str,
     tokenizer_dir: str = "./datasets/tiny_stories",
-    max_new_tokens: int = 100,
-    top_k: int = 0,
+    max_new_tokens: int = 256,
+    top_k: float = 0.0,
     top_p: float = 0.0,
     temperature: float = 1.0,
 ) -> dict:

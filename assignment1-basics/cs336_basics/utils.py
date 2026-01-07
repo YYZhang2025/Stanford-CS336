@@ -44,31 +44,15 @@ def print_color(content: str, color: str = "green"):
     print(f"[{color}]{content}[/{color}]")
 
 
-def get_ctx(use_mixed: bool, device: torch.device, amp_mode: str = "auto", verbose: bool = False):
-    if not use_mixed or amp_mode == "off":
+def get_ctx(use_mixed: bool, device: torch.device, verbose: bool = True):
+    if use_mixed and device.type == "cuda":
         if verbose:
-            print("Not using autocast context")
-        return nullcontext()
-
-    dev = device.type
-
-    if amp_mode == "fp16":
-        dtype = torch.float16
-    elif amp_mode == "bf16":
-        dtype = torch.bfloat16
+            print_color("Using mixed precision on CUDA with BFloat16", "blue")
+        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
     else:
-        if dev == "cuda":
-            dtype = torch.bfloat16
-        elif dev == "mps":
-            dtype = torch.float16
-        elif dev == "cpu":
-            dtype = torch.float16
-        else:
-            return nullcontext()
-
-    if verbose:
-        print(f"Using autocast with dtype={dtype} on device={dev}")
-    return torch.autocast(device_type=dev, dtype=dtype)
+        if verbose:
+            print_color("Not using mixed precision", "blue")
+        return nullcontext()
 
 
 def save_checkpoint(
@@ -76,7 +60,7 @@ def save_checkpoint(
     optimizer,
     iteration,
     out: str | os.PathLike | typing.BinaryIO | typing.IO[bytes],
-    verbose: bool = True,
+    verbose: bool = False,
 ) -> None:
     state = {
         "model_state_dict": model.state_dict(),
@@ -91,7 +75,7 @@ def save_checkpoint(
 
 
 def load_checkpoint(
-    src: str | os.PathLike | typing.BinaryIO | typing.IO[bytes], model, optimizer, verbose: bool = True
+    src: str | os.PathLike | typing.BinaryIO | typing.IO[bytes], model, optimizer, verbose: bool = False
 ) -> int:
     state = torch.load(src, map_location=get_device())
 

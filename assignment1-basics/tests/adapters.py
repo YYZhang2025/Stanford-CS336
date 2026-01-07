@@ -516,7 +516,7 @@ def run_get_batch(
         language modeling labels.
     """
     # raise NotImplementedError
-    from cs336_basics.train_engine import get_batch
+    from cs336_basics.data import get_batch
 
     return get_batch(dataset, batch_size, context_length, device)
 

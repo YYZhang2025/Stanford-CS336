@@ -60,6 +60,7 @@ class ModelConfig:
 class TrainingConfig:
     batch_size: int = 128
     num_steps: int = 10000
+    dataset_dir: str = "datasets/tiny_stories"
     train_data_path: str = "datasets/tiny_stories/train.bin"
     eval_data_path: str = "datasets/tiny_stories/eval.bin"
 
@@ -81,6 +82,7 @@ class TrainingConfig:
     device: torch.device = field(default=torch.device("cpu"), repr=False)
     debug_mode: bool = False
     use_mixed_precision: bool = True
+    seed: int = 42
 
     def __post_init__(self):
         # Validate lr_scheduler_type

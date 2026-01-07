@@ -52,10 +52,6 @@ def get_batch(
     return inputs, targets
 
 
-# Backwards-compatible alias (some scaffolding/tests may look for this name).
-# If your assignment expects a different function name, you can still call get_batch.
-
-
 def data_loading(
     x: np.ndarray,
     batch_size: int,
