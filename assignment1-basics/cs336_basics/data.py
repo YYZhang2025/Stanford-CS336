@@ -84,7 +84,9 @@ def get_batch_sequential(
     # Advance cursor by a whole batch.
     state.pos = int((state.pos + batch_size * int(stride)) % (max_start + 1))
 
-    return inputs.to(device), targets.to(device)
+    return inputs.pin_memory().to(device, non_blocking=True), targets.pin_memory().to(
+        device, non_blocking=True
+    )
 
 
 def data_loading_sequential(

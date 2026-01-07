@@ -9,6 +9,7 @@ from cs336_basics.config import TrainingConfig
 from cs336_basics.data import BatchState, data_loading, data_loading_sequential
 from cs336_basics.generate import generate
 from cs336_basics.loss import cross_entropy, perplexity
+from cs336_basics.optim import cosine_annealing_lr
 from cs336_basics.utils import clear_memory, get_ctx, print_color, save_checkpoint
 
 
@@ -109,6 +110,15 @@ def train(model: torch.nn.Module, optimizer: torch.optim.Optimizer, train_config
         # Backward pass and optimization step
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
+        lr = cosine_annealing_lr(
+            t=step,
+            alpha_max=train_config.max_lr,
+            alpha_min=train_config.min_lr,
+            Tw=train_config.warmup_steps,
+            Tc=train_config.num_steps // 2,
+        )
+        for param_group in optimizer.param_groups:
+            param_group["lr"] = lr
         optimizer.step()
 
         # Logging
