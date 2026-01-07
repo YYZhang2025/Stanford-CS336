@@ -172,17 +172,9 @@ def train_bpe(
 
     for i in trange(num_merges):
         most_frequent_pair = pop_best_pair(pair_heap, pairs_freqs, vocab)
-        # most_frequent_pair = get_most_frequent_pair(pairs_freqs, vocab)
 
         new_id = len(vocab)
         vocab[new_id] = vocab[most_frequent_pair[0]] + vocab[most_frequent_pair[1]]
-
-        # word_counter, pairs_freqs, pair_heap = merge_pairs_with_heap(
-        #     word_counter, pairs_freqs, most_frequent_pair, new_id, vocab, pair_heap
-        # )
-        # word_counter, pairs_freqs = merge_pairs_incremental(
-        #     word_counter, pairs_freqs, most_frequent_pair, new_id
-        # )
 
         word_counter, pairs_freqs, pair_heap, pair_to_words = merge_pairs_with_heap_index(
             word_counter, pairs_freqs, most_frequent_pair, new_id, vocab, pair_heap, pair_to_words
@@ -211,13 +203,21 @@ class BPETokenizer:
         self.vocab_inv = {v: k for k, v in self.vocab.items()}
 
         rank: dict[tuple[int, int], int] = {}
+        merge_to_new_id: dict[tuple[int, int], int] = {}
+
         for r, (a_bytes, b_bytes) in enumerate(self.merges):
             a_id = self.vocab_inv.get(a_bytes)
             b_id = self.vocab_inv.get(b_bytes)
-            if a_id is None or b_id is None:
+            # The merged token should be present in vocab; if not, skip this merge rule.
+            new_id = self.vocab_inv.get(a_bytes + b_bytes)
+            if a_id is None or b_id is None or new_id is None:
                 continue
-            rank[(a_id, b_id)] = r
+            pair = (a_id, b_id)
+            rank[pair] = r
+            merge_to_new_id[pair] = new_id
+
         self.rank = rank
+        self.merge_to_new_id = merge_to_new_id
 
     def _pre_tokenize(self, text: str) -> list[bytes]:
         """Pre-tokenize the input text into a list of byte-strings.
@@ -289,9 +289,12 @@ class BPETokenizer:
                 if cur_r is None or cur_r != r:
                     continue
 
-                # merge i and j into i
-                new_bytes = self.vocab[ids[i]] + self.vocab[ids[j]]
-                new_id = self.vocab_inv[new_bytes]
+                # merge i and j into i (use precomputed mapping to avoid KeyError)
+                pair = (ids[i], ids[j])
+                new_id = self.merge_to_new_id.get(pair)
+                if new_id is None:
+                    # Should be rare: rank says mergeable but vocab lacks merged token; treat as stale.
+                    continue
                 ids[i] = new_id
 
                 # delete j from the linked list
@@ -347,6 +350,8 @@ class BPETokenizer:
 
         merges = []
         with open(merges_filepath, "r") as mf:
+            # Skip the first line (header)
+            next(mf)
             for line in mf:
                 if line.strip() and not line.startswith("#"):
                     parts = line.strip().split()
