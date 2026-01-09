@@ -19,7 +19,7 @@ This repository contains my notes and solutions for the [Stanford CS336: Languag
 
 # Assignment 01: Tokenization & Language Modeling
 
-![	](./assets/ass01-test.png) 
+![](./assets/all_pass_test.png)
 
 ## Part 0: Environment Setup & Data Download
 We first need install the virtual environment manager `uv` to ensure reproducibility, portability, and ease of use.
