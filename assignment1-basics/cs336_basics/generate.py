@@ -78,15 +78,16 @@ def generate(
     input_ids = input_ids.to(model.device)
     input_len = input_ids.shape[1]
 
-    with torch.no_grad():
+    with torch.amp.autocast("cuda", enabled=False):
         for _ in range(max_new_tokens):
             logits = model(input_ids)
-            next_token_logits = logits[:, -1, :]  # Get logits for the last token
+            next_token_logits = logits[:, -1, :].float()  # Get logits for the last token
 
             # Sample from the distribution
             assert temperature > 0.0, "Temperature must be positive."
             assert top_p == 0.0 or top_k == 0, "Only one of top_p or top_k should be set."
             next_token_logits = next_token_logits / temperature
+
             if top_k > 0:
                 next_token_id = top_k_sampling(next_token_logits, top_k)
             elif top_p > 0.0:

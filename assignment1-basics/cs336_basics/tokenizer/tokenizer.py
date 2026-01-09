@@ -3,7 +3,7 @@ import json
 import os
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator
-from multiprocessing import Manager, Process, Queue
+from multiprocessing import Manager, Process
 from queue import Empty
 
 import numpy as np
@@ -13,7 +13,7 @@ from tqdm import tqdm, trange
 from cs336_basics.tokenizer.merge_fn import (
     build_pair_heap,
     merge_pairs_with_heap_index,
-    pop_best_pair,
+    pop_most_frequent_pair,
 )
 from cs336_basics.tokenizer.utils import (
     find_chunk_boundaries,
@@ -24,7 +24,7 @@ from cs336_basics.tokenizer.utils import (
 from cs336_basics.utils import print_color
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-NUM_PROCESSES = max(1, (os.cpu_count() or 1) - 4)
+NUM_PROCESSES = min(4, os.cpu_count() or 1)
 
 
 def init_vocab(special_tokens: list[str] | None = None) -> dict[int, bytes]:
@@ -37,6 +37,12 @@ def init_vocab(special_tokens: list[str] | None = None) -> dict[int, bytes]:
             current_index += 1
 
     return vocab
+
+
+def update_vocab(vocab: dict[int, bytes], pair: tuple[int, int]) -> int:
+    new_id = len(vocab)
+    vocab[new_id] = vocab[pair[0]] + vocab[pair[1]]
+    return new_id
 
 
 ### --------- Pre-process & Pre-tokenization steps --------------
@@ -58,11 +64,8 @@ def split_by_special_tokens(text: str, special_tokens: list[str], include_specia
 
 
 # 2. Split by regex pattern
-def pre_tokenize(
-    string: str, special_tokens: list[str], including_special: bool = False
-) -> tuple[Counter, dict[tuple[int, int], int]]:
+def pre_tokenize(string: str, special_tokens: list[str], including_special: bool = False) -> Counter:
     word_counter = Counter()
-    pairs: dict[tuple[int, int], int] = {}
 
     chunks = split_by_special_tokens(string, special_tokens, include_special=including_special)
 
@@ -75,31 +78,21 @@ def pre_tokenize(
                 word_encoded = tuple(string_to_bytes(word, return_int=True))
                 word_counter[word_encoded] += 1
 
-    for word in word_counter:
-        for i in range(len(word) - 1):
-            pair = (word[i], word[i + 1])
-            pairs[pair] = pairs.get(pair, 0) + word_counter[word]
-
-    return word_counter, pairs
+    return word_counter
 
 
-def pre_tokenize_string_worker(
-    input_path: str | os.PathLike,
-    special_tokens: list[str],
-    queue: Queue,
-    start: int,
-    end: int,
-    include_special: bool = False,
-):
+def pre_tokenize_string_worker(*args):
+    input_path, special_tokens, queue, start, end, include_special = args
+
     # Read the chunk from the file
     with open(input_path, "rb") as f:
         f.seek(start)
         chunk = f.read(end - start).decode("utf-8", errors="ignore")
 
-    word_counter, pairs_counter = pre_tokenize(chunk, special_tokens, include_special)
+    word_counter = pre_tokenize(chunk, special_tokens, include_special)
 
     # Put the result in the queue
-    queue.put((word_counter, pairs_counter))
+    queue.put(word_counter)
 
 
 ### --------- End Pre-process steps --------------
@@ -116,7 +109,6 @@ def train_bpe(
     num_merges = vocab_size - 256 - (len(special_tokens) if special_tokens else 0)
     vocab: dict[int, bytes] = init_vocab(special_tokens)
     merges: list[tuple[bytes, bytes]] = []
-    pair_to_words: dict[tuple[int, int], set[tuple[int, ...]]] = defaultdict(set)
 
     # 1. Pre-tokenization
     # 1.1 Find chunk boundaries
@@ -142,38 +134,36 @@ def train_bpe(
         p.start()
     for p in processes:
         p.join()
-
     if verbose:
         print_color("Pre-tokenization processes completed. Aggregating results...")
 
     word_counter = Counter()
-    pairs_freqs = Counter()
     for _ in range(len(processes)):
         try:
-            partial_counter, partial_pairs = queue.get(timeout=10)
+            partial_counter = queue.get(timeout=10)
             word_counter.update(partial_counter)
-            pairs_freqs.update(partial_pairs)
         except Empty:
             continue
     if verbose:
         print_color(f"Completed pre-tokenization. Vocabulary size: {len(word_counter)} unique tokens.")
 
+    pairs_counter = Counter()
+    pair_to_words: dict[tuple[int, int], set[tuple[int, ...]]] = defaultdict(set)
     for word in word_counter:
         for i in range(len(word) - 1):
             pair = (word[i], word[i + 1])
             pair_to_words[pair].add(word)
+            pairs_counter[pair] += word_counter[word]
 
     # 2. BPE Core Loop
-    pair_heap = build_pair_heap(pairs_freqs, vocab)
+    pair_heap = build_pair_heap(pairs_counter, vocab)
 
     for i in trange(num_merges):
-        most_frequent_pair = pop_best_pair(pair_heap, pairs_freqs, vocab)
+        most_frequent_pair = pop_most_frequent_pair(pair_heap, pairs_counter)
+        new_id = update_vocab(vocab, most_frequent_pair)
 
-        new_id = len(vocab)
-        vocab[new_id] = vocab[most_frequent_pair[0]] + vocab[most_frequent_pair[1]]
-
-        word_counter, pairs_freqs, pair_heap, pair_to_words = merge_pairs_with_heap_index(
-            word_counter, pairs_freqs, most_frequent_pair, new_id, vocab, pair_heap, pair_to_words
+        word_counter, pairs_counter, pair_heap, pair_to_words = merge_pairs_with_heap_index(
+            word_counter, pairs_counter, most_frequent_pair, new_id, vocab, pair_heap, pair_to_words
         )
 
         merges.append((vocab[most_frequent_pair[0]], vocab[most_frequent_pair[1]]))
@@ -223,12 +213,6 @@ class BPETokenizer:
         self.eos_token_id = self.vocab_inv.get(b"<|endoftext|>", None)
 
     def _pre_tokenize(self, text: str) -> list[bytes]:
-        """Pre-tokenize the input text into a list of byte-strings.
-
-        Returns a list where each element is:
-          - the UTF-8 bytes of a special token (e.g. b"<|endoftext|>")
-          - the UTF-8 bytes of a regex token (e.g. b" hello")
-        """
         parts = split_by_special_tokens(text, self.special_tokens, include_special=True)
         token_list: list[bytes] = []
 
@@ -252,6 +236,8 @@ class BPETokenizer:
             if n <= 1:
                 return ids
 
+            alive = [True] * n
+
             # Doubly-linked list over positions 0..n-1 (positions are stable; nodes get "deleted")
             prev = [-1] * n
             nxt = [-1] * n
@@ -259,10 +245,7 @@ class BPETokenizer:
                 prev[i] = i - 1
                 nxt[i] = i + 1 if i + 1 < n else -1
 
-            alive = [True] * n
-
             # best pair per left-position i: (rank, i)
-
             heap: list[tuple[int, int]] = []
 
             def pair_rank(i: int) -> int | None:
@@ -285,15 +268,14 @@ class BPETokenizer:
                 if j == -1 or not alive[i] or not alive[j]:
                     continue
                 # stale check: rank might no longer match current neighbor
-                cur_r = self.rank.get((ids[i], ids[j]))
+                pair = (ids[i], ids[j])
+                cur_r = self.rank.get(pair)
                 if cur_r is None or cur_r != r:
                     continue
 
                 # merge i and j into i (use precomputed mapping to avoid KeyError)
-                pair = (ids[i], ids[j])
                 new_id = self.merge_to_new_id.get(pair)
                 if new_id is None:
-                    # Should be rare: rank says mergeable but vocab lacks merged token; treat as stale.
                     continue
                 ids[i] = new_id
 

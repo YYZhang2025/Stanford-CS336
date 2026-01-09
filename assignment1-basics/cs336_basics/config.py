@@ -52,7 +52,7 @@ class ModelConfig:
 
 @dataclass
 class TrainingConfig:
-    batch_size: int = 128
+    batch_size: int = 256
     num_steps: int = 10_000
     dataset_dir: str = "datasets/tiny_stories"
     train_data_path: str = "datasets/tiny_stories/train.bin"
