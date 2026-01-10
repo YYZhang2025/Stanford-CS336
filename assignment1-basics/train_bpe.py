@@ -39,7 +39,19 @@ if __name__ == "__main__":
         )
 
         print(f"BPE tokenizer trained and saved to {dataset['save_dir']}")
-    print("Tokenizer already exists, skipping training.")
+    elif os.path.exists(os.path.join(dataset["save_dir"], "vocab.json")) and os.path.exists(
+        os.path.join(dataset["save_dir"], "merges.txt")
+    ):
+        print(f"Tokenizer already exists at {dataset['save_dir']}, skipping training.")
+    else:
+        print(f"Save directory {dataset['save_dir']} exists but tokenizer files not found. Training...")
+        train_bpe(
+            dataset["train_data_path"],
+            vocab_size=dataset["vocab_size"],
+            special_tokens=dataset["special_tokens"],
+            verbose=True,
+            save_path=dataset["save_dir"],
+        )
 
     # Pre-tokenize the dataset
     tokenizer = load_tokenizer_from_dir(dataset["save_dir"])

@@ -3,7 +3,7 @@ import json
 import os
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator
-from multiprocessing import Manager, Process
+from multiprocessing import Manager, Process, Queue
 from queue import Empty
 
 import numpy as np
@@ -132,8 +132,10 @@ def train_bpe(
         )
         processes.append(p)
         p.start()
+
     for p in processes:
         p.join()
+
     if verbose:
         print_color("Pre-tokenization processes completed. Aggregating results...")
 
@@ -144,6 +146,7 @@ def train_bpe(
             word_counter.update(partial_counter)
         except Empty:
             continue
+
     if verbose:
         print_color(f"Completed pre-tokenization. Vocabulary size: {len(word_counter)} unique tokens.")
 
@@ -229,8 +232,6 @@ class BPETokenizer:
         return token_list
 
     def encode(self, text: str) -> list[int]:
-        byte_tokens = self._pre_tokenize(text)
-
         def merge_one_pretoken(ids: list[int]) -> list[int]:
             n = len(ids)
             if n <= 1:
@@ -248,16 +249,16 @@ class BPETokenizer:
             # best pair per left-position i: (rank, i)
             heap: list[tuple[int, int]] = []
 
-            def pair_rank(i: int) -> int | None:
+            def push_if_valid(i: int):
+                cur_r = None
                 j = nxt[i]
                 if j == -1 or not alive[i] or not alive[j]:
-                    return None
-                return self.rank.get((ids[i], ids[j]))
+                    cur_r = None
+                else:
+                    cur_r = self.rank.get((ids[i], ids[j]))
 
-            def push_if_valid(i: int):
-                r = pair_rank(i)
-                if r is not None:
-                    heapq.heappush(heap, (r, i))
+                if cur_r is not None:
+                    heapq.heappush(heap, (cur_r, i))
 
             for i in range(n):
                 push_if_valid(i)
@@ -300,6 +301,8 @@ class BPETokenizer:
                     out.append(ids[k])
                 k = nxt[k]
             return out
+
+        byte_tokens = self._pre_tokenize(text)
 
         token_ids: list[int] = []
         for btok in byte_tokens:
@@ -353,8 +356,6 @@ class BPETokenizer:
 
 def encode_file_to_bin(tokenizer, text_path, out_bin_path, dtype=np.uint16):
     total_bytes = os.path.getsize(text_path)
-    processed_bytes = 0
-    processed_chunks = 0
 
     with open(text_path, encoding="utf-8") as f_in, open(out_bin_path, "wb") as f_out:
         p_bar = tqdm(total=total_bytes, desc="Encoding to binary", unit="B", unit_scale=True)
@@ -363,9 +364,6 @@ def encode_file_to_bin(tokenizer, text_path, out_bin_path, dtype=np.uint16):
             token_ids = tokenizer.encode(line)
             arr = np.array(token_ids, dtype=dtype)
             arr.tofile(f_out)
-
-            processed_bytes += len(line.encode("utf-8"))
-            processed_chunks += 1
 
             p_bar.update(len(line.encode("utf-8")))
 

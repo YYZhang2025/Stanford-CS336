@@ -20,12 +20,10 @@ class Embedding(nn.Module):
         self._init_weight()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # return self.weight[x]
-
-        B, L = x.shape  # x: (N, L)
-        out = x.reshape(-1)  # (N*L,)
-        out = self.weight.index_select(0, out)  # (N*L, D)
-        out = out.reshape(B, L, self.embedding_dim)  # (N, L, D)
+        B, L = x.shape  # x: (B, L)
+        out = x.reshape(-1)  # (B*L,)
+        out = self.weight.index_select(0, out)  # (B*L, D)
+        out = out.reshape(B, L, self.embedding_dim)  # (B, L, D)
 
         return out
 

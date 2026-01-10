@@ -5,10 +5,6 @@ from collections import Counter, defaultdict
 def get_most_frequent_pair(
     pair_counter: dict[tuple[int, int], int], vocab: dict[int, bytes]
 ) -> tuple[int, int]:
-    """
-    If the most frequent pair is not unique, return the one with the highest
-    byte representation in lexicographical order.
-    """
     max_freq = max(pair_counter.values())
 
     candidates = [
@@ -207,8 +203,6 @@ def merge_pairs_with_heap_index(
     list,
     dict[tuple[int, int], set[tuple[int, ...]]],
 ]:
-    a, b = target_pair
-
     # Start from full counters so unaffected words remain.
     new_word_counter: Counter = Counter(word_counter)
     updated_pair_counter: Counter = pair_counter.copy()
@@ -251,7 +245,7 @@ def merge_pairs_with_heap_index(
                 changed_pairs.add(pair)
                 pair_to_words.setdefault(pair, set()).add(new_word)
 
-    # (G) Push updated frequencies for changed pairs into heap (skip non-positive).
+    # 5. Push updated frequencies for changed pairs into heap (skip non-positive).
     if pair_heap is not None:
         for p in changed_pairs:
             f = updated_pair_counter.get(p, 0)

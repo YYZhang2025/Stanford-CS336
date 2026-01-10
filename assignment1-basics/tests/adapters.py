@@ -446,7 +446,7 @@ def run_transformer_lm(
         layer.ffn.gate.weight.data = weights[f"{layer_prefix}ffn.w3.weight"].T
         layer.norm2.weight.data = weights[f"{layer_prefix}ln2.weight"]
     model.final_norm.weight.data = weights["ln_final.weight"]
-    model.output_linear.weight.data = weights["lm_head.weight"].T
+    model.output_layer.linear.weight.data = weights["lm_head.weight"].T
     return model(in_indices)
 
 

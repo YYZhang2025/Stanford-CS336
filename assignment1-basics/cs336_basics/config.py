@@ -28,6 +28,10 @@ class ModelConfig:
     use_rope: bool = True
     rope_theta: float = 10000.0
 
+    # Others
+    tie_weights: bool = False
+    use_final_norm: bool = False
+
     @classmethod
     def from_json(cls, path: str | Path) -> "ModelConfig":
         path = Path(path)

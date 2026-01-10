@@ -68,7 +68,6 @@ class MHA(nn.Module):
 
     def _create_causal_mask(self, seq_len: int, device: torch.device) -> torch.Tensor:
         mask = torch.tril(torch.ones(seq_len, seq_len, device=device)).bool()
-
         return mask.unsqueeze(0).unsqueeze(0)
 
     def forward(
