@@ -18,17 +18,51 @@ class TransformerBlock(nn.Module):
             theta=config.rope_theta,
             max_seq_len=config.max_seq_len,
         )
-        self.ffn = FFN(
-            d_model=config.d_model,
-            d_ff=config.d_ff,
-        )
+        self.use_moe = config.use_moe
+        if self.use_moe:
+            from cs336_basics.modules import MoE
+
+            self.ffn = MoE(
+                d_model=config.d_model,
+                d_ff=config.d_ff,
+                num_experts=config.num_experts,
+                top_k=config.top_k,
+                router_jitter=config.router_jitter,
+                z_loss_coef=config.z_loss_coef,
+                lb_loss_coef=config.lb_loss_coef,
+            )
+        else:
+            self.ffn = FFN(
+                d_model=config.d_model,
+                d_ff=config.d_ff,
+            )
         self.norm1 = RMSNorm(config.d_model)
         self.norm2 = RMSNorm(config.d_model)
 
-    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None) -> torch.Tensor | tuple:
+        aux = {
+            "z_loss": x.new_zeros(()),
+            "z_loss_scaled": x.new_zeros(()),
+            "tokens_per_expert": None,  # 可选：debug/monitor
+            "lb_loss": None,  # 可选：debug/monitor
+            "lb_loss_scaled": None,  # 可选：debug/monitor
+        }
+
         x = x + self.mha(self.norm1(x), token_positions=token_positions)
-        x = x + self.ffn(self.norm2(x))
-        return x
+
+        if self.use_moe:
+            out = self.ffn(self.norm2(x))
+            x = x + out["output"]
+
+            aux["tokens_per_expert"] = out.get("tokens_per_expert", None)
+            aux["z_loss"] = out.get("z_loss", x.new_zeros(()))
+            aux["z_loss_scaled"] = out.get("z_loss_scaled", x.new_zeros(()))
+            aux["lb_loss"] = out.get("lb_loss", None)
+            aux["lb_loss_scaled"] = out.get("lb_loss_scaled", None)
+        else:
+            x = x + self.ffn(self.norm2(x))
+
+        return x, aux
 
 
 class OutputLayer(nn.Module):
@@ -57,15 +91,30 @@ class TransformerLM(nn.Module):
         if config.tie_weights:
             self._tie_weights()
 
-    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, token_positions: torch.Tensor | None = None) -> tuple:
         x = self.token_embedding(x)
+        total_z_scaled = x.new_zeros(())
+        tokens_per_expert_all = []  # list[Tensor] or []
+        total_lb_loss_scaled = x.new_zeros(())
+        moe_layers = 0
 
         for layer in self.layers:
-            x = layer(x, token_positions=token_positions)
+            x, aux = layer(x, token_positions=token_positions)
+            total_z_scaled = total_z_scaled + aux["z_loss_scaled"]
+            total_lb_loss_scaled = total_lb_loss_scaled + aux["lb_loss_scaled"]
+            tokens_per_expert_all.append(aux["tokens_per_expert"])
+            moe_layers += 1
 
         x = self.final_norm(x)
         logits = self.output_layer(x)
-        return logits
+
+        aux_out = {
+            "z_loss_scaled": total_z_scaled,
+            "moe_layers": moe_layers,
+            "tokens_per_expert": tokens_per_expert_all,  # list[Tensor] or []
+            "lb_loss_scaled": total_lb_loss_scaled,
+        }
+        return logits, aux_out
 
     def _tie_weights(self):
         self.output_layer.linear.weight = self.token_embedding.weight

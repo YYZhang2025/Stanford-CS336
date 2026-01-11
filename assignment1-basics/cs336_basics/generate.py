@@ -80,7 +80,7 @@ def generate(
 
     with torch.amp.autocast("cuda", enabled=False):
         for _ in range(max_new_tokens):
-            logits = model(input_ids)
+            logits, _ = model(input_ids)
             next_token_logits = logits[:, -1, :].float()  # Get logits for the last token
 
             # Sample from the distribution

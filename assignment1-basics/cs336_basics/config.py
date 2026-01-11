@@ -4,6 +4,8 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
+from cs336_basics.utils import get_device
+
 
 @dataclass
 class ModelConfig:
@@ -27,6 +29,14 @@ class ModelConfig:
     # RoPE
     use_rope: bool = True
     rope_theta: float = 10000.0
+
+    # MoE specific parameters
+    use_moe: bool = False
+    num_experts: int = 4
+    top_k: int = 1
+    router_jitter: float = 0.1
+    z_loss_coef: float = 1e-3
+    lb_loss_coef: float = 1e-1
 
     # Others
     tie_weights: bool = False
@@ -78,9 +88,10 @@ class TrainingConfig:
     # Others:
     model_name: str = "tiny_stories_transformer"
     save_checkpoint_dir: str = "checkpoints"
-    device: str = "cpu"
+    device: str = get_device().type
     debug_mode: bool = False
     use_mixed_precision: bool = True
+    log_moe_every: int = 500
     seed: int = 2025
 
     def __post_init__(self):
@@ -88,6 +99,7 @@ class TrainingConfig:
         if self.debug_mode:
             self.num_steps = 100
             self.batch_size = 8
+            self.log_moe_every = 10
             self.train_data_path = "datasets/tiny_stories/eval.bin"
 
     @classmethod
@@ -98,10 +110,19 @@ class TrainingConfig:
         return cls.from_dict(data)
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "TrainingConfig":
-        allowed = {f.name for f in fields(cls)}
-        filtered: dict[str, Any] = {k: v for k, v in dict(data).items() if k in allowed}
-        return cls(**filtered)
+    def from_dict(cls, data: dict[str, Any]) -> "TrainingConfig":
+        data = dict(data)  # shallow copy，避免修改外部传入的 dict
+
+        # ---- fix betas: JSON list -> tuple ----
+        if "betas" in data:
+            b = data["betas"]
+            if isinstance(b, list):
+                b = tuple(b)
+            if not (isinstance(b, tuple) and len(b) == 2):
+                raise ValueError(f"betas must be a tuple of length 2, got: {data['betas']}")
+            data["betas"] = (float(b[0]), float(b[1]))
+
+        return cls(**data)
 
     def to_dict(self) -> dict[str, Any]:
         return {f.name: getattr(self, f.name) for f in fields(self)}

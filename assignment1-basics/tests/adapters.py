@@ -335,7 +335,7 @@ def run_transformer_block(
     block.ffn.down.weight.data = weights["ffn.w2.weight"].T
     block.ffn.gate.weight.data = weights["ffn.w3.weight"].T
     block.norm2.weight.data = weights["ln2.weight"]
-    return block(in_features, token_positions=None)
+    return block(in_features, token_positions=None)[0]
 
 
 def run_transformer_lm(
@@ -447,7 +447,7 @@ def run_transformer_lm(
         layer.norm2.weight.data = weights[f"{layer_prefix}ln2.weight"]
     model.final_norm.weight.data = weights["ln_final.weight"]
     model.output_layer.linear.weight.data = weights["lm_head.weight"].T
-    return model(in_indices)
+    return model(in_indices)[0]
 
 
 def run_rmsnorm(
