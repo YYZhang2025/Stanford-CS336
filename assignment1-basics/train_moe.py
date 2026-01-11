@@ -17,8 +17,6 @@ def main(
     # Load configs
     train_config = TrainingConfig.from_json(train_config_json) if train_config_json else TrainingConfig()
     model_config = ModelConfig.from_json(model_config_json) if model_config_json else ModelConfig()
-    model_config.use_moe = True  # Force enable MoE for this training script
-    train_config.debug_mode = True  # Disable debug mode for MoE training
 
     # Save configs
     out_dir = os.path.join(
@@ -79,6 +77,6 @@ def main(
 
 if __name__ == "__main__":
     main(
-        train_config_json="./checkpoints/tiny_moe_transformer/train_config.json",
-        model_config_json="./checkpoints/tiny_moe_transformer/model_config.json",
+        train_config_json="./configs/tiny_moe_transformer_small_dff/train_config.json",
+        model_config_json="./configs/tiny_moe_transformer_small_dff/model_config.json",
     )

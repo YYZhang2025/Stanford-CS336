@@ -44,8 +44,8 @@ class TransformerBlock(nn.Module):
             "z_loss": x.new_zeros(()),
             "z_loss_scaled": x.new_zeros(()),
             "tokens_per_expert": None,  # 可选：debug/monitor
-            "lb_loss": None,  # 可选：debug/monitor
-            "lb_loss_scaled": None,  # 可选：debug/monitor
+            "lb_loss": x.new_zeros(()),  # 可选：debug/monitor
+            "lb_loss_scaled": x.new_zeros(()),  # 可选：debug/monitor
         }
 
         x = x + self.mha(self.norm1(x), token_positions=token_positions)
@@ -57,8 +57,8 @@ class TransformerBlock(nn.Module):
             aux["tokens_per_expert"] = out.get("tokens_per_expert", None)
             aux["z_loss"] = out.get("z_loss", x.new_zeros(()))
             aux["z_loss_scaled"] = out.get("z_loss_scaled", x.new_zeros(()))
-            aux["lb_loss"] = out.get("lb_loss", None)
-            aux["lb_loss_scaled"] = out.get("lb_loss_scaled", None)
+            aux["lb_loss"] = out.get("lb_loss", x.new_zeros(()))
+            aux["lb_loss_scaled"] = out.get("lb_loss_scaled", x.new_zeros(()))
         else:
             x = x + self.ffn(self.norm2(x))
 
@@ -100,11 +100,11 @@ class TransformerLM(nn.Module):
 
         for layer in self.layers:
             x, aux = layer(x, token_positions=token_positions)
-            total_z_scaled = total_z_scaled + aux["z_loss_scaled"]
-            total_lb_loss_scaled = total_lb_loss_scaled + aux["lb_loss_scaled"]
-            tokens_per_expert_all.append(aux["tokens_per_expert"])
-            moe_layers += 1
-
+            if self.config.use_moe:
+                total_z_scaled = total_z_scaled + aux["z_loss_scaled"]
+                total_lb_loss_scaled = total_lb_loss_scaled + aux["lb_loss_scaled"]
+                tokens_per_expert_all.append(aux["tokens_per_expert"])
+                moe_layers += 1
         x = self.final_norm(x)
         logits = self.output_layer(x)
 

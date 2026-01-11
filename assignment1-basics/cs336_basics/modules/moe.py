@@ -98,28 +98,61 @@ class MoE(nn.Module):
         topk_logits, topk_indices = torch.topk(
             logits, self.top_k, dim=-1
         )  # both (batch_size, seq_len, top_k)
-        topk_gates = torch.softmax(topk_logits, dim=-1)  # (batch_size, seq_len, top_k)
+        if self.top_k == 1:
+            topk_gates = router_probs.gather(-1, topk_indices)
+        else:
+            topk_gates = torch.softmax(topk_logits, dim=-1)  # (batch_size, seq_len, top_k)
         lb_loss = self._load_balance_loss(router_probs, topk_indices, self.num_experts)
 
-        expert_outputs = torch.zeros_like(x)
+        x_flat = x.reshape(batch_size * seq_len, d_model)  # (N, D)
+        out_flat = x_flat.new_zeros((batch_size * seq_len, d_model))  # (N, D)
 
-        for k in range(self.top_k):
-            expert_index = topk_indices[:, :, k]  # (batch_size, seq_len)
-            gate_values = topk_gates[:, :, k].unsqueeze(-1)  # (batch_size, seq_len, 1)
+        if self.top_k == 1:
+            expert_ids = topk_indices.reshape(batch_size * seq_len)  # (N,)
+            gate_flat = topk_gates.reshape(batch_size * seq_len)  # (N,)
 
-            for expert_id in range(self.num_experts):
-                mask = (expert_index == expert_id).unsqueeze(-1)  # (batch_size, seq_len, 1)
-                if mask.sum() == 0:
+            for e in range(self.num_experts):
+                pos = (expert_ids == e).nonzero(as_tuple=False).squeeze(1)  # token positions for expert e
+                if pos.numel() == 0:
                     continue
-                expert_input = x * mask.float()  # Zero out non-selected tokens
-                expert_output = self.experts[expert_id](expert_input)  # (batch_size, seq_len, d_model)
-                expert_outputs += expert_output * gate_values * mask.float()
 
-        tokens_per_expert = torch.zeros(self.num_experts, device=x.device)
-        for expert_id in range(self.num_experts):
-            tokens_per_expert[expert_id] = (
-                (topk_indices == expert_id).sum() / self.top_k / (batch_size * seq_len)
-            )
+                x_e = x_flat.index_select(0, pos)  # (n_e, D)
+                y_e = self.experts[e](x_e)  # (n_e, D)
+                y_e = y_e * gate_flat.index_select(0, pos).unsqueeze(1)  # gate
+
+                out_flat.index_add_(0, pos, y_e)  # scatter back
+
+            # tokens per expert（fraction）
+            counts = torch.bincount(expert_ids, minlength=self.num_experts).to(x.dtype)
+            tokens_per_expert = counts / (batch_size * seq_len)
+
+        else:
+            # 把每个 token 复制 K 次：token_ids 对应 topk 的每一项
+            token_ids = (
+                torch.arange(batch_size * seq_len, device=x.device)
+                .unsqueeze(1)
+                .expand(batch_size * seq_len, self.top_k)
+                .reshape(-1)
+            )  # (N*K,)
+            expert_ids = topk_indices.reshape(-1)  # (N*K,)
+            gate_flat = topk_gates.reshape(-1)  # (N*K,)
+
+            for e in range(self.num_experts):
+                sel = (expert_ids == e).nonzero(as_tuple=False).squeeze(1)  # positions in (N*K,)
+                if sel.numel() == 0:
+                    continue
+
+                tok = token_ids.index_select(0, sel)  # token indices in [0..N)
+                x_e = x_flat.index_select(0, tok)  # (n_e, D)
+                y_e = self.experts[e](x_e)  # (n_e, D)
+                y_e = y_e * gate_flat.index_select(0, sel).unsqueeze(1)
+
+                out_flat.index_add_(0, tok, y_e)  # 同一个 token 可能被多个 topk 命中 -> index_add_ 自动累加
+
+            counts = torch.bincount(expert_ids, minlength=self.num_experts).to(x.dtype)
+            tokens_per_expert = counts / (batch_size * seq_len * self.top_k)
+
+        expert_outputs = out_flat.view(batch_size, seq_len, d_model)
 
         return {
             "output": expert_outputs,

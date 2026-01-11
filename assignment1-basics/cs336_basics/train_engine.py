@@ -46,7 +46,7 @@ def eval_model(
             )
 
             # Forward pass
-            logits = model(inputs)
+            logits, aux = model(inputs)
             logits = logits.view(-1, logits.size(-1))
             targets = targets.view(-1)
             loss = cross_entropy(logits, targets)
@@ -151,7 +151,7 @@ def train(model: torch.nn.Module, optimizer: torch.optim.Optimizer, train_config
             clear_memory()
 
             print_color("Evaluating model...", "blue")
-            eval_loss, eval_perplexity = eval_model(model, train_config, step + 1)
+            eval_loss, eval_perplexity = eval_model(model, train_config)
             if train_config.wandb_logging:
                 log_dict["eval/loss"] = eval_loss.item()
                 log_dict["eval/perplexity"] = eval_perplexity.item()
