@@ -1,0 +1,22 @@
+{
+  "vocab_size": 10000,
+  "max_seq_len": 256,
+  "d_model": 512,
+  "d_ff": 1344,
+  "num_heads": 16,
+  "num_layers": 4,
+  "dropout": 0.1,
+  "use_rms_norm": true,
+  "pre_norm": true,
+  "eos_token_id": 256,
+  "use_rope": true,
+  "rope_theta": 10000.0,
+  "use_moe": true,
+  "num_experts": 4,
+  "top_k": 1,
+  "router_jitter": 0.1,
+  "z_loss_coef": 0.001,
+  "lb_loss_coef": 0.1,
+  "tie_weights": false,
+  "use_final_norm": false
+}

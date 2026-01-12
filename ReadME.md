@@ -3,6 +3,28 @@
 CS336: Language Modeling from Scratch <br/>
 (Spring 2025 Version)</h1>
 
+
+
+- [Assignment 01: Tokenization \& Language Modeling](#assignment-01-tokenization--language-modeling)
+  - [Part 0: Environment Setup \& Data Download](#part-0-environment-setup--data-download)
+  - [Part 1: BPE Tokenizer](#part-1-bpe-tokenizer)
+  - [Part 2: Language Model \& Optimizer](#part-2-language-model--optimizer)
+  - [Part 3: Training Model](#part-3-training-model)
+    - [Configuration](#configuration)
+    - [Learning Curves](#learning-curves)
+    - [Genrated Sample](#genrated-sample)
+  - [Bonus: MoE Layer](#bonus-moe-layer)
+- [Assignment 02: Flash Attention \& Parallelism](#assignment-02-flash-attention--parallelism)
+- [Assignment 03: Scaling Laws](#assignment-03-scaling-laws)
+- [Assignment 04: Data](#assignment-04-data)
+- [Assignment 05: Alignment \& RLHF (GRPO)](#assignment-05-alignment--rlhf-grpo)
+
+
+
+
+
+
+
 This repository contains my notes and solutions for the [Stanford CS336: Language Modeling from Scratch](https://stanford-cs336.github.io/spring2025). I also created a website containing more details of the lectures. If you are interested, please go to visited this [website](https://yyzhang2025.github.io/posts/LearningNotes/CS336)
 
 
@@ -211,10 +233,23 @@ a her she find a the They fess and lots twins was a fold said, I fold the a the 
 
 
 
-## TODO
+## Bonus: MoE Layer
 
-As a bonus, I plan to implement the MoE layer in the future. 
+In the [Lecture 04](https://www.youtube.com/watch?v=LPv1KfUXLCo&list=PLoROMvodv4rOY23Y0BoGoBGgQ1zmU_MT_&index=4), we have learned about Mixture of Experts (MoE) layer to increase the model capacity without significantly increasing the computation cost. However, in the first assignment, we did not implement the MoE layer in the model. Here is my implementation of the MoE layer using Top-k Gating mechanism, with z-loss and load balancing loss to stabilize the training.
 
+
+I have implement the MoE layer in  `assignment1-basics/cs336_basics/modules/moe.py` file. And the training code in the `assignment1-basics/train_moe.py` file.  I trained 2 version of the MoE model:
+
+- 4-expert MoE model with same `d_ff` as the dense model `tiny_moe_transformer_batch-256_steps-10000`
+- 4-expert MoE model with $\frac{d_ff}{4}=336$ as the dense model, name as `
+tiny_moe_transformer_small_dff_batch-256_steps-10000`
+
+
+Below are the learning curves for both MoE models compared with the dense model.
+
+![](./assets/moe-dense-mode.png)
+
+As we can see, the MoE model with smaller `d_ff` outperforms the dense model with same computation cost, demonstrating the effectiveness of MoE layers in increasing model capacity. However, the MoE model with same `d_ff` as dense model does not show significant improvement, possibly due to the increased model size leading to over-fitting on the small TinyStories dataset.
 
 
 
