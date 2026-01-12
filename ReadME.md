@@ -262,7 +262,17 @@ raise NotImplementedError("This is a placeholder for Assignment 02 solution.")
 
 
 # Assignment 03: Scaling Laws 
+```Python
+raise NotImplementedError("This is a placeholder for Assignment 03 solution.")
+```
+
 
 # Assignment 04: Data 
+```Python
+raise NotImplementedError("This is a placeholder for Assignment 04 solution.")
+```
 
 # Assignment 05: Alignment & RLHF (GRPO)
+```Python
+raise NotImplementedError("This is a placeholder for Assignment 05 solution.")
+```
