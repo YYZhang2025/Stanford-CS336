@@ -5,7 +5,6 @@ from typing import Type
 import torch
 
 
-
 def get_flashattention_autograd_function_pytorch() -> Type:
     """
     Returns a torch.autograd.Function subclass that implements FlashAttention2.
@@ -16,7 +15,10 @@ def get_flashattention_autograd_function_pytorch() -> Type:
         A class object (not an instance of the class)
     """
     # For example: return MyFlashAttnAutogradFunctionClass
-    raise NotImplementedError
+    # raise NotImplementedError
+    from cs336_systems.flash_attention.pytorch_version import FlashAttention
+
+    return FlashAttention
 
 
 def get_flashattention_autograd_function_triton() -> Type:
@@ -120,7 +122,9 @@ def ddp_bucketed_on_train_batch_start(ddp_model: torch.nn.Module, optimizer: tor
     raise NotImplementedError
 
 
-def get_sharded_optimizer(params, optimizer_cls: Type[torch.optim.Optimizer], **kwargs) -> torch.optim.Optimizer:
+def get_sharded_optimizer(
+    params, optimizer_cls: Type[torch.optim.Optimizer], **kwargs
+) -> torch.optim.Optimizer:
     """
     Returns a torch.optim.Optimizer that handles optimizer state sharding
     of the given optimizer_cls on the provided parameters.
