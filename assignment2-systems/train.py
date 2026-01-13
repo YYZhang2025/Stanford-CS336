@@ -68,25 +68,23 @@ def main(
     # Start training
     print_color("Starting training...", "blue")
     print_color(f"[info] Total steps: {train_config.num_steps}", "blue")
-    start_time = time.perf_counter()
+    START_TIME = time.perf_counter()
     train(model=model, optimizer=optimizer, train_config=train_config)
-    elapsed_s = time.perf_counter() - start_time
+    ELAPSED_TIME_S = time.perf_counter() - START_TIME
     print_color(f"Training completed.", "blue")
-    print_color(f"Elapsed time: {elapsed_s:.2f}s", "blue")
+    print_color(f"Elapsed time: {ELAPSED_TIME_S:.2f}s", "blue")
 
     # Finalize WandB run
     if train_config.wandb_logging:
         wandb.log(
             {
-                "time/elapsed_s": elapsed_s,
-                "time/elapsed_min": elapsed_s / 60.0,
-                "speed/steps_per_s": train_config.num_steps / max(elapsed_s, 1e-9),
-                # 如果你知道每 step 的 tokens 数，也可以加:
-                # "speed/tokens_per_s": total_tokens / max(elapsed_s, 1e-9),
+                "time/elapsed_s": ELAPSED_TIME_S,
+                "time/elapsed_min": ELAPSED_TIME_S / 60.0,
+                "speed/steps_per_s": train_config.num_steps / max(ELAPSED_TIME_S, 1e-9),
             }
         )
-        wandb.summary["time/elapsed_s"] = elapsed_s  # 放到 Summary 里更适合对比
-        wandb.summary["speed/steps_per_s"] = train_config.num_steps / max(elapsed_s, 1e-9)
+        wandb.summary["time/elapsed_s"] = ELAPSED_TIME_S  # 放到 Summary 里更适合对比
+        wandb.summary["speed/steps_per_s"] = train_config.num_steps / max(ELAPSED_TIME_S, 1e-9)
 
         wandb.finish()
 
