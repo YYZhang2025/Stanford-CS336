@@ -1,7 +1,6 @@
 import torch
 
-from .backward_kernel import _flash_backward_triton
-from .forward_kernel import _flash_forward_triton
+from .forward_backward_version1 import _flash_backward_triton, _flash_forward_triton
 
 
 # ----------------------------
@@ -77,9 +76,9 @@ class FlashAttention(torch.autograd.Function):
         dQ, dK, dV = _flash_backward_triton(q_f, k_f, v_f, O, L, dO, is_causal=is_causal)
 
         # Cast back to input dtype (match PyTorch autograd expectations)
-        grad_q = dQ.to(dtype=q.dtype)
-        grad_k = dK.to(dtype=k.dtype)
-        grad_v = dV.to(dtype=v.dtype)
+        grad_q = dQ.to(dtype=torch.float32)
+        grad_k = dK.to(dtype=torch.float32)
+        grad_v = dV.to(dtype=torch.float32)
 
         if had_heads:
             grad_q = grad_q.reshape(B, H, N_q, D)
