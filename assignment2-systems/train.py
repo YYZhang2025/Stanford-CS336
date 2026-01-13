@@ -43,7 +43,7 @@ def main(
         wandb.login(key=wandb_api)
         wandb.init(
             project="cs336-basics-assignment2",
-            name=train_config.model_name,
+            name=f"{train_config.model_name}_batch{train_config.batch_size}_steps{train_config.num_steps}",
             config={
                 "model_config": model_config.to_dict(),
                 "train_config": train_config.to_dict(),
