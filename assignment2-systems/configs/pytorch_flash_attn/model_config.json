@@ -1,6 +1,6 @@
 {
   "vocab_size": 10000,
-  "max_seq_len": 256,
+  "max_seq_len": 1024,
   "d_model": 512,
   "d_ff": 1344,
   "num_heads": 16,

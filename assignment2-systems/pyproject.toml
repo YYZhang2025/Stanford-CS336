@@ -20,6 +20,7 @@ dependencies = [
     "dotenv>=0.9.9",
     "rich>=14.2.0",
     "fire>=0.7.1",
+    "seaborn>=0.13.2",
 ]
 
 [build-system]

@@ -200,8 +200,7 @@ class FlashAttention(torch.autograd.Function):
                 grad_k[:, k_start:k_end, :] += (
                     torch.bmm(grad_S.transpose(1, 2), Q_blk_i.float()) * scale
                 ).to(grad_k.dtype)
-
-        # End of inner loop over key, value blocks
+            # End of inner loop over key, value blocks
         # End of outer loop over query blocks
 
         if had_heads:

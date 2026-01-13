@@ -53,9 +53,7 @@ class MHA(nn.Module):
         self.num_heads = num_heads
         self.d_k = d_model // num_heads
 
-        self.q_linear = Linear(d_model, d_model, device=device, dtype=dtype)
-        self.k_linear = Linear(d_model, d_model, device=device, dtype=dtype)
-        self.v_linear = Linear(d_model, d_model, device=device, dtype=dtype)
+        self.qkv_linear = Linear(d_model, 3 * d_model, device=device, dtype=dtype)
         self.out_linear = Linear(d_model, d_model, device=device, dtype=dtype)
 
         self.attention_type = attention_type
@@ -80,19 +78,24 @@ class MHA(nn.Module):
     ) -> torch.Tensor:
         batch_size, seq_len, _ = x.size()
 
-        Q = self.q_linear(x).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
-        K = self.k_linear(x).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
-        V = self.v_linear(x).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
+        Q, K, V = map(
+            lambda t: t.view(batch_size, seq_len, self.num_heads, self.d_k).transpose(1, 2),
+            torch.chunk(self.qkv_linear(x), 3, dim=-1),
+        )
 
         if self.use_rope:
             Q, K = self.rope(Q, token_positions), self.rope(K, token_positions)
 
         if self.attention_type == "official_pytorch_attention":
-            raise ImportError(
-                "official_pytorch_attention Need Flash Attention pachage which is not available."
-            )
+            try:
+                from flash_attn import flash_attn_func
+            except ImportError:
+                raise ImportError("Please install flash_attn to use official_pytorch_attention.")
+            attn_output = flash_attn_func(Q, K, V, causal=True)
         elif self.attention_type == "triton_flash_attention":
-            raise NotImplementedError("Triton Flash Attention not implemented yet.")
+            from cs336_systems.flash_attention.triton_version import FlashAttention
+
+            attn_output = FlashAttention.apply(Q, K, V)
         elif self.attention_type == "pytorch_flash_attention":
             from cs336_systems.flash_attention.pytorch_version import FlashAttention
 
