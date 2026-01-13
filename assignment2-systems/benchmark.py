@@ -9,8 +9,6 @@ import torch
 from cs336_systems.flash_attention.pytorch_version import FlashAttention
 from cs336_systems.flash_attention.triton_version import FlashAttention as TritonFlashAttention
 
-# from flash_attn import flash_attn_func
-
 
 def scaled_dot_product_attention(
     query: torch.Tensor,
@@ -20,10 +18,12 @@ def scaled_dot_product_attention(
 ) -> torch.Tensor:
     d_k = query.size(-1)
     scores = torch.matmul(query, key.transpose(-2, -1)) / (d_k**0.5)
+    device = query.device
 
     if is_causal:
         q_len, k_len = query.size(-2), key.size(-2)
         causal_mask = torch.arange(q_len).unsqueeze(1) >= torch.arange(k_len).unsqueeze(0)
+        causal_mask = causal_mask.to(device)
         scores = scores.masked_fill(~causal_mask.unsqueeze(0).unsqueeze(0), float("-inf"))
 
     attn_weights = torch.nn.functional.softmax(scores, dim=-1)
@@ -84,7 +84,6 @@ if __name__ == "__main__":
     pytorch_flash_attention_times = []
     naive_pytorch_attention_times = []
     triton_flash_attention_times = []
-    official_flash_attention_times = []
     pytorch_sdpa_times = []
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -116,12 +115,12 @@ if __name__ == "__main__":
             num_iters=N_ITERS,
         )
 
-        official_flash_attention_time = benchmark(
-            f"Official Flash Attention (N_q={n_q})",
-            attention_fn_wrapper(scaled_dot_product_attention, q, k, v, is_causal),
-            num_warmsup=N_WARMUP,
-            num_iters=N_ITERS,
-        )
+        # official_flash_attention_time = benchmark(
+        #     f"Official Flash Attention (N_q={n_q})",
+        #     attention_fn_wrapper(scaled_dot_product_attention, q, k, v, is_causal),
+        #     num_warmsup=N_WARMUP,
+        #     num_iters=N_ITERS,
+        # )
 
         pytorch_sdpa_time = benchmark(
             f"PyTorch SDPA Attention (N_q={n_q})",
@@ -135,7 +134,7 @@ if __name__ == "__main__":
         pytorch_flash_attention_times.append(pytorch_flash_attention_time)
         naive_pytorch_attention_times.append(naive_pytorch_attention_time)
         triton_flash_attention_times.append(triton_flash_attention_time)
-        official_flash_attention_times.append(official_flash_attention_time)
+        # official_flash_attention_times.append(official_flash_attention_time)
         pytorch_sdpa_times.append(pytorch_sdpa_time)
 
         print("-" * 80)
@@ -143,7 +142,7 @@ if __name__ == "__main__":
     # -------- Plot Results --------
     t_pytorch_flash_ms = (np.array(pytorch_flash_attention_times) * 1000.0).tolist()
     t_sdpa_ms = (np.array(pytorch_sdpa_times) * 1000.0).tolist()
-    t_official_flash_ms = (np.array(official_flash_attention_times) * 1000.0).tolist()
+    # t_official_flash_ms = (np.array(official_flash_attention_times) * 1000.0).tolist()
     t_triton_flash_ms = (np.array(triton_flash_attention_times) * 1000.0).tolist()
     t_naive_pytorch_ms = (np.array(naive_pytorch_attention_times) * 1000.0).tolist()
 
@@ -151,7 +150,7 @@ if __name__ == "__main__":
         ("Naive SDPA", t_naive_pytorch_ms),
         ("PyTorch FlashAttention", t_pytorch_flash_ms),
         ("Triton Flash Attention", t_triton_flash_ms),
-        ("Official Flash Attention", t_official_flash_ms),
+        # ("Official Flash Attention", t_official_flash_ms),
         ("PyTorch SDPA", t_sdpa_ms),
     ]
 
@@ -191,4 +190,7 @@ if __name__ == "__main__":
     sns.despine(ax=ax)
     fig.tight_layout()
     plt.show()
+    plt.savefig(f"attention_benchmark_{str(dtype).split('.')[-1]}.png")
     plt.close()
+
+torch.int8

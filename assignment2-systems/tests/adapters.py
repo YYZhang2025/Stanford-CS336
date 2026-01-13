@@ -35,7 +35,7 @@ def get_flashattention_autograd_function_triton() -> Type:
     """
     # For example: return MyTritonFlashAttentionAutogradFunctionClass
     # raise NotImplementedError
-    from cs336_systems.flash_attention.triton_version import FlashAttention
+    from cs336_systems.flash_attention.trition_version import FlashAttention
 
     return FlashAttention
 
