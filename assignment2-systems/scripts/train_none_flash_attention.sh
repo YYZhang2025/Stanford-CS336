@@ -10,5 +10,5 @@ TRAIN_CONFIG_JSON="./configs/none_flash_attn/train_config.json"
 MODEL_CONFIG_JSON="./configs/none_flash_attn/model_config.json"
 
 uv run python train.py \
-  --train_config "$TRAIN_CONFIG_JSON" \
-  --model_config "$MODEL_CONFIG_JSON"
+  --train_config_json "$TRAIN_CONFIG_JSON" \
+  --model_config_json "$MODEL_CONFIG_JSON"

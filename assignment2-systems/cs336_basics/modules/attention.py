@@ -97,7 +97,6 @@ class MHA(nn.Module):
             from cs336_systems.flash_attention.pytorch_version import FlashAttention
 
             attn_output = FlashAttention.apply(Q, K, V, True)
-
         elif self.attention_type == "none_flash_attention":
             causal_mask = self._create_causal_mask(seq_len, x.device)
             attn_output = scaled_dot_product_attention(Q, K, V, mask=causal_mask)

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 
 # Run from the repo root regardless of where this script is invoked from
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,5 +11,5 @@ TRAIN_CONFIG_JSON="./configs/pytorch_flash_attn/train_config.json"
 MODEL_CONFIG_JSON="./configs/pytorch_flash_attn/model_config.json"
 
 uv run python train.py \
-  --train_config "$TRAIN_CONFIG_JSON" \
-  --model_config "$MODEL_CONFIG_JSON"
+  --train_config_json "$TRAIN_CONFIG_JSON" \
+  --model_config_json "$MODEL_CONFIG_JSON"
