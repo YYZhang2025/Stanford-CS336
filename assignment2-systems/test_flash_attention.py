@@ -2,7 +2,7 @@ import rich
 import torch
 
 # from cs336_systems.flash_attention.pytorch_version import FlashAttention
-from cs336_systems.flash_attention.triton_version import FlashAttention
+from cs336_systems.flash_attention.triton_version import get_flash_attention_triton
 
 if __name__ == "__main__":
     import rich
@@ -25,6 +25,7 @@ if __name__ == "__main__":
     v = torch.randn(B, H, N_k, D, device=device, dtype=dtype, requires_grad=True)
 
     # -------- Forward --------
+    FlashAttention = get_flash_attention_triton()
     out_impl = FlashAttention.apply(q, k, v, is_causal)
 
     # Reference (PyTorch SDPA)
