@@ -7,7 +7,7 @@ import seaborn as sns
 import torch
 
 from cs336_systems.flash_attention.pytorch_version import FlashAttention
-from cs336_systems.flash_attention.triton_version import FlashAttention as TritonFlashAttention
+from cs336_systems.flash_attention.triton_versions import FlashAttention as TritonFlashAttention
 
 
 def scaled_dot_product_attention(
