@@ -63,3 +63,43 @@ To submit, run `./test_and_make_submission.sh` . This script will install your
 code's dependencies, run tests, and create a gzipped tarball with the output. We
 should be able to unzip your submitted tarball and run
 `./test_and_make_submission.sh` to verify your test results.
+
+
+
+
+
+-------
+
+
+```bash
+
+git clone https://github.com/YYZhang2025/Stanford-CS336.git
+cd Stanford-CS336/assignment2-systems 
+
+```
+
+
+
+
+
+```bash
+
+pip install uv 
+uv add setuptools
+uv run python  
+
+
+pip install -U huggingface_hub
+hf download YuYangZhang/TinyStory-Tokenized  --repo-type dataset --local-dir datasets/tiny_stories
+
+
+
+./train_scripts/train_pytorch_flash_attention.sh
+
+```
+
+```bash
+
+echo "WANDB_API_KEY=cce4a87f1433d97af85ab9f18df5253a95f3e4b5" >> .env
+
+```

@@ -48,3 +48,29 @@ gunzip owt_valid.txt.gz
 cd ..
 ```
 
+
+
+
+
+
+```bash
+git clone https://github.com/YYZhang2025/Stanford-CS336.git
+cd Stanford-CS336/assignment1-basics
+```
+
+```bash
+pip install uv 
+uv run pytest 
+```
+
+
+```bash
+pip install -U huggingface_hub
+hf download YuYangZhang/TinyStory-Tokenized  --repo-type dataset --local-dir datasets/tiny_stories
+```
+
+Create `.env` file in the root directory with the following content:
+
+```
+WANDB_API_KEY=<your_wandb_api_key_here>
+```

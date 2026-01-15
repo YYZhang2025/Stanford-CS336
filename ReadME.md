@@ -241,7 +241,7 @@ In the [Lecture 04](https://www.youtube.com/watch?v=LPv1KfUXLCo&list=PLoROMvodv4
 I have implement the MoE layer in  `assignment1-basics/cs336_basics/modules/moe.py` file. And the training code in the `assignment1-basics/train_moe.py` file.  I trained 2 version of the MoE model:
 
 - 4-expert MoE model with same `d_ff` as the dense model `tiny_moe_transformer_batch-256_steps-10000`
-- 4-expert MoE model with $\frac{d_ff}{4}=336$ as the dense model, name as `
+- 4-expert MoE model with $\frac{d_{ff}}{4}=336$ as the dense model, name as `
 tiny_moe_transformer_small_dff_batch-256_steps-10000`
 
 
