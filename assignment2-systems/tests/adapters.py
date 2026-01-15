@@ -16,9 +16,9 @@ def get_flashattention_autograd_function_pytorch() -> Type:
     """
     # For example: return MyFlashAttnAutogradFunctionClass
     # raise NotImplementedError
-    from cs336_systems.flash_attention.pytorch_version import FlashAttention
+    from cs336_systems.flash_attention.pytorch_version import PyTorchFlashAttention
 
-    return FlashAttention
+    return PyTorchFlashAttention
 
 
 def get_flashattention_autograd_function_triton() -> Type:
@@ -35,9 +35,9 @@ def get_flashattention_autograd_function_triton() -> Type:
     """
     # For example: return MyTritonFlashAttentionAutogradFunctionClass
     # raise NotImplementedError
-    from cs336_systems.flash_attention.triton_version import get_flash_attention_triton
+    from cs336_systems.flash_attention.triton_version import TritonFlashAttention
 
-    return get_flash_attention_triton()
+    return TritonFlashAttention
 
 
 def get_ddp_individual_parameters(module: torch.nn.Module) -> torch.nn.Module:
