@@ -283,23 +283,23 @@ def train(model: torch.nn.Module, train_config: TrainingConfig):
                 )
 
         # sampling (rank0 only)
-        if (
-            train_config.sampling_log_interval > 0
-            and (step + 1) % train_config.sampling_log_interval == 0
-            and rank0
-        ):
-            generated_outputs = generate(
-                model=ddp_model.module,
-                prompt="Once upon a time",
-                tokenizer=tokenizer,
-                max_new_tokens=256,
-                top_k=50,
-                temperature=0.8,
-            )
-            generated_text = generated_outputs["generated_text"]
-            print_color(f"Generated text at step {step + 1}:", "cyan")
-            print("Once upon a time", end="")
-            print_color(f"{generated_text}\n", "cyan")
+        # if (
+        #     train_config.sampling_log_interval > 0
+        #     and (step + 1) % train_config.sampling_log_interval == 0
+        #     and rank0
+        # ):
+        #     generated_outputs = generate(
+        #         model=ddp_model.module,
+        #         prompt="Once upon a time",
+        #         tokenizer=tokenizer,
+        #         max_new_tokens=256,
+        #         top_k=50,
+        #         temperature=0.8,
+        #     )
+        #     generated_text = generated_outputs["generated_text"]
+        #     print_color(f"Generated text at step {step + 1}:", "cyan")
+        #     print("Once upon a time", end="")
+        #     print_color(f"{generated_text}\n", "cyan")
 
         if train_config.wandb_logging and log_dict and rank0:
             wandb.log(log_dict, step=step + 1)
