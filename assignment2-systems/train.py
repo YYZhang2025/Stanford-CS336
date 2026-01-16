@@ -71,7 +71,7 @@ def main(
     START_TIME = time.perf_counter()
     train(model=model, optimizer=optimizer, train_config=train_config)
     ELAPSED_TIME_S = time.perf_counter() - START_TIME
-    print_color(f"Training completed.", "blue")
+    print_color("Training completed.", "blue")
     print_color(f"Elapsed time: {ELAPSED_TIME_S:.2f}s", "blue")
 
     # Finalize WandB run
@@ -83,7 +83,7 @@ def main(
                 "speed/steps_per_s": train_config.num_steps / max(ELAPSED_TIME_S, 1e-9),
             }
         )
-        wandb.summary["time/elapsed_s"] = ELAPSED_TIME_S  # 放到 Summary 里更适合对比
+        wandb.summary["time/elapsed_s"] = ELAPSED_TIME_S
         wandb.summary["speed/steps_per_s"] = train_config.num_steps / max(ELAPSED_TIME_S, 1e-9)
 
         wandb.finish()
