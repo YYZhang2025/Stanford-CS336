@@ -119,7 +119,7 @@ def eval_model(model: torch.nn.Module, train_config: TrainingConfig) -> Tuple[to
     x = torch.from_numpy(original_data)
 
     total_tokens = len(original_data)
-    num_eval_batches = total_tokens // (train_config.batch_size * model.config.max_seq_len)
+    num_eval_batches = total_tokens // (train_config.batch_size * train_config.max_seq_len)
     num_eval_batches = max(num_eval_batches, 1)
 
     state = BatchState(pos=0, world_size=1)
@@ -130,7 +130,7 @@ def eval_model(model: torch.nn.Module, train_config: TrainingConfig) -> Tuple[to
         inputs, targets = get_batch_sequential_sharded(
             x_t=x,
             batch_size=train_config.batch_size,
-            context_length=model.config.max_seq_len,
+            context_length=train_config.max_seq_len,
             device=get_device(),
             state=state,
         )
@@ -283,23 +283,23 @@ def train(model: torch.nn.Module, train_config: TrainingConfig):
                 )
 
         # sampling (rank0 only)
-        # if (
-        #     train_config.sampling_log_interval > 0
-        #     and (step + 1) % train_config.sampling_log_interval == 0
-        #     and rank0
-        # ):
-        #     generated_outputs = generate(
-        #         model=ddp_model.module,
-        #         prompt="Once upon a time",
-        #         tokenizer=tokenizer,
-        #         max_new_tokens=256,
-        #         top_k=50,
-        #         temperature=0.8,
-        #     )
-        #     generated_text = generated_outputs["generated_text"]
-        #     print_color(f"Generated text at step {step + 1}:", "cyan")
-        #     print("Once upon a time", end="")
-        #     print_color(f"{generated_text}\n", "cyan")
+        if (
+            train_config.sampling_log_interval > 0
+            and (step + 1) % train_config.sampling_log_interval == 0
+            and rank0
+        ):
+            generated_outputs = generate(
+                model=ddp_model.module,
+                prompt="Once upon a time",
+                tokenizer=tokenizer,
+                max_new_tokens=256,
+                top_k=50,
+                temperature=0.8,
+            )
+            generated_text = generated_outputs["generated_text"]
+            print_color(f"Generated text at step {step + 1}:", "cyan")
+            print("Once upon a time", end="")
+            print_color(f"{generated_text}\n", "cyan")
 
         if train_config.wandb_logging and log_dict and rank0:
             wandb.log(log_dict, step=step + 1)
