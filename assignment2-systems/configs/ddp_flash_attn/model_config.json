@@ -19,5 +19,5 @@
   "lb_loss_coef": 0.1,
   "tie_weights": false,
   "use_final_norm": false,
-  "attention_type": "official_pytorch_attention"
+  "attention_type": "triton_flash_attention"
 }

@@ -95,6 +95,7 @@ class TrainingConfig:
     min_lr: float = 1e-5
     warmup_steps: int = 500
     max_grad_norm: float = 1.0
+    max_seq_len: int = 256  # Set by ModelConfig during training setup
 
     # Logging & checkpointing
     wandb_logging: bool = True

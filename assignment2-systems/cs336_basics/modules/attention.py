@@ -93,13 +93,13 @@ class MHA(nn.Module):
                 raise ImportError("Please install flash_attn to use official_pytorch_attention.")
             attn_output = flash_attn_func(Q, K, V, causal=True)
         elif self.attention_type == "triton_flash_attention":
-            from cs336_systems.flash_attention.triton_version import FlashAttention
+            from cs336_systems.flash_attention.triton_version import TritonFlashAttention
 
-            attn_output = FlashAttention.apply(Q, K, V)
+            attn_output = TritonFlashAttention.apply(Q, K, V)
         elif self.attention_type == "pytorch_flash_attention":
-            from cs336_systems.flash_attention.pytorch_version import FlashAttention
+            from cs336_systems.flash_attention.pytorch_version import PyTorchFlashAttention
 
-            attn_output = FlashAttention.apply(Q, K, V, True)
+            attn_output = PyTorchFlashAttention.apply(Q, K, V, True)
         elif self.attention_type == "none_flash_attention":
             causal_mask = self._create_causal_mask(seq_len, x.device)
             attn_output = scaled_dot_product_attention(Q, K, V, mask=causal_mask)

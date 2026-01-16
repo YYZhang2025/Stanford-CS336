@@ -22,8 +22,9 @@ def setup_process_group(rank: int, world_size: int) -> None:
 
 
 def cleanup_process_group() -> None:
-    dist.barrier()
-    dist.destroy_process_group()
+    if dist.is_available() and dist.is_initialized():
+        dist.barrier()
+        dist.destroy_process_group()
 
 
 @torch.no_grad()

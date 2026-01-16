@@ -16,10 +16,10 @@
   "wandb_logging": true,
   "eval_log_interval": 500,
   "sampling_log_interval": 200,
-  "model_name": "pytorch_flash_attn",
+  "model_name": "triton_flash_attn",
   "save_checkpoint_dir": "checkpoints",
   "debug_mode": false,
   "use_mixed_precision": true,
-  "log_moe_every": 10,
+  "log_moe_every": 100,
   "seed": 2025
 }
