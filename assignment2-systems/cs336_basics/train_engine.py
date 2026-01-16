@@ -2,9 +2,9 @@ import os
 
 import numpy as np
 import torch
+import wandb
 from tqdm import trange
 
-import wandb
 from cs336_basics.config import TrainingConfig
 from cs336_basics.data import BatchState, data_loading_sequential
 from cs336_basics.generate import generate
@@ -32,7 +32,7 @@ def eval_model(
     x = torch.from_numpy(original_data)
 
     total_tokens = len(original_data)
-    num_eval_batches = total_tokens // (train_config.batch_size * model.config.max_seq_len)
+    num_eval_batches = total_tokens // (train_config.batch_size * train_config.max_seq_len)
 
     state = BatchState(pos=0)
     with torch.no_grad():
@@ -40,7 +40,7 @@ def eval_model(
             inputs, targets = data_loading_sequential(
                 x=x,
                 batch_size=train_config.batch_size,
-                context_length=model.config.max_seq_len,
+                context_length=train_config.max_seq_len,
                 device=next(model.parameters()).device,
                 state=state,
             )
@@ -57,6 +57,8 @@ def eval_model(
     eval_loss = torch.tensor(eval_loss / num_eval_batches)
     eval_perplexity = torch.tensor(eval_perplexity / num_eval_batches)
 
+    del inputs, targets, logits, loss
+    clear_memory()
     model.train()
 
     return eval_loss, eval_perplexity
