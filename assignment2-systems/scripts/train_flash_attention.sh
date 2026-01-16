@@ -6,8 +6,8 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 cd "$REPO_ROOT"
 
-TRAIN_CONFIG_JSON="./configs/triton_flash/train_config.json"
-MODEL_CONFIG_JSON="./configs/triton_flash/model_config.json"
+TRAIN_CONFIG_JSON="./configs/triton_flash_attn/train_config.json"
+MODEL_CONFIG_JSON="./configs/triton_flash_attn/model_config.json"
 
 uv run python train.py \
   --train_config_json "$TRAIN_CONFIG_JSON" \
