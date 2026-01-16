@@ -86,7 +86,7 @@ def train(model: torch.nn.Module, optimizer: torch.optim.Optimizer, train_config
         inputs, targets = data_loading_sequential(
             x=x,
             batch_size=train_config.batch_size,
-            context_length=model.config.max_seq_len,
+            context_length=train_config.max_seq_len,
             device=train_config.device,
             state=state,
         )
@@ -147,35 +147,35 @@ def train(model: torch.nn.Module, optimizer: torch.optim.Optimizer, train_config
                         for e in range(len(tpe)):
                             log_dict[f"moe/layer_{layer_idx}_expert_{e}_tokens"] = tpe[e]
 
-        if train_config.eval_log_interval > 0 and (step + 1) % train_config.eval_log_interval == 0:
-            # Cleanup
-            del inputs, targets, logits, loss
-            clear_memory()
+        # if train_config.eval_log_interval > 0 and (step + 1) % train_config.eval_log_interval == 0:
+        #     # Cleanup
+        #     del inputs, targets, logits, loss
+        #     clear_memory()
 
-            print_color("Evaluating model...", "blue")
-            eval_loss, eval_perplexity = eval_model(model, train_config)
-            if train_config.wandb_logging:
-                log_dict["eval/loss"] = eval_loss.item()
-                log_dict["eval/perplexity"] = eval_perplexity.item()
+        #     print_color("Evaluating model...", "blue")
+        #     eval_loss, eval_perplexity = eval_model(model, train_config)
+        #     if train_config.wandb_logging:
+        #         log_dict["eval/loss"] = eval_loss.item()
+        #         log_dict["eval/perplexity"] = eval_perplexity.item()
 
-            print_color(
-                f"Eval Loss: {eval_loss.item():.4f}, Eval Perplexity: {eval_perplexity.item():.4f}", "blue"
-            )
-            if eval_loss < best_eval_loss:
-                best_eval_loss = eval_loss
-                print_color(f"New best eval loss: {best_eval_loss:.4f}", "yellow")
-                out_path = os.path.join(
-                    train_config.save_checkpoint_dir,
-                    train_config.model_name,
-                    f"best_model_step_{step + 1}.pt",
-                )
-                save_checkpoint(
-                    model=model,
-                    optimizer=optimizer,
-                    iteration=step + 1,
-                    out=out_path,
-                    verbose=True,
-                )
+        #     print_color(
+        #         f"Eval Loss: {eval_loss.item():.4f}, Eval Perplexity: {eval_perplexity.item():.4f}", "blue"
+        #     )
+        #     if eval_loss < best_eval_loss:
+        #         best_eval_loss = eval_loss
+        #         print_color(f"New best eval loss: {best_eval_loss:.4f}", "yellow")
+        #         out_path = os.path.join(
+        #             train_config.save_checkpoint_dir,
+        #             train_config.model_name,
+        #             f"best_model_step_{step + 1}.pt",
+        #         )
+        #         save_checkpoint(
+        #             model=model,
+        #             optimizer=optimizer,
+        #             iteration=step + 1,
+        #             out=out_path,
+        #             verbose=True,
+        #         )
 
         # Sample generation
         if train_config.sampling_log_interval > 0 and (step + 1) % train_config.sampling_log_interval == 0:
