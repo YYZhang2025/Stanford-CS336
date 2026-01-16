@@ -16,7 +16,7 @@
   "wandb_logging": true,
   "eval_log_interval": 500,
   "sampling_log_interval": 200,
-  "model_name": "official_pytorch_attention",
+  "model_name": "ddp_flash_attn",
   "save_checkpoint_dir": "checkpoints",
   "debug_mode": false,
   "use_mixed_precision": true,

@@ -336,12 +336,12 @@ def main(
     train_config = TrainingConfig.from_json(train_config_json) if train_config_json else TrainingConfig()
     model_config = ModelConfig.from_json(model_config_json) if model_config_json else ModelConfig()
 
-    model_config.attention_type = "none_flash_attention"
-    model_config.max_seq_len = 128
-    train_config.debug_mode = True
-    train_config.num_steps = 100
-    train_config.batch_size = 16
-    train_config.wandb_logging = False
+    # model_config.attention_type = "none_flash_attention"
+    # model_config.max_seq_len = 128
+    # train_config.debug_mode = True
+    # train_config.num_steps = 100
+    # train_config.batch_size = 16
+    # train_config.wandb_logging = False
 
     train_config.max_seq_len = model_config.max_seq_len
 
