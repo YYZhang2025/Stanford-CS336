@@ -216,10 +216,7 @@ def train(model: torch.nn.Module, train_config: TrainingConfig):
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
 
-        # ✅ 关键：等 bucket all-reduce 完成 + 平均梯度（必须在 step 前）
         ddp_model.finish_gradient_synchronization()
-
-        # ✅ clip 必须在 global grad sync 之后
         gradient_clip(ddp_model.module.parameters(), max_l2_norm=train_config.max_grad_norm)
 
         # lr schedule
@@ -336,18 +333,8 @@ def main(
     train_config = TrainingConfig.from_json(train_config_json) if train_config_json else TrainingConfig()
     model_config = ModelConfig.from_json(model_config_json) if model_config_json else ModelConfig()
 
-    # model_config.attention_type = "none_flash_attention"
-    # model_config.max_seq_len = 128
-    # train_config.debug_mode = True
-    # train_config.num_steps = 100
-    # train_config.batch_size = 16
-    # train_config.wandb_logging = False
-
     train_config.max_seq_len = model_config.max_seq_len
 
-    # 如果你希望 train_config.batch_size 表示 GLOBAL batch size（推荐）
-    # 那么 local batch = global/world_size，需要你在 train() 里用 local_bs
-    # 这里可以做一个强约束：
     if world_size > 1:
         assert train_config.batch_size % world_size == 0, (
             f"train_config.batch_size (global) must be divisible by world_size. "
@@ -378,14 +365,12 @@ def main(
         )
 
     # ---- Seed ----
-    # 建议每个 rank seed 不同但可复现：seed + rank
     seed_everything(train_config.seed + rank)
 
     # ---- Build model ----
     model = build_model(model_config, device=device)
 
     # ---- Wrap with bucketed DDP ----
-    # 你可以把 bucket_size_mb 放进 train_config 里，没有就用默认值
     bucket_mb = float(getattr(train_config, "bucket_size_mb", 25.0))
     ddp_model = DDPBucket(model, bucket_size_mb=bucket_mb)
 
