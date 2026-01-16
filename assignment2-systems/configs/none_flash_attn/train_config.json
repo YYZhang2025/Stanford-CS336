@@ -1,5 +1,5 @@
 {
-  "batch_size": 512,
+  "batch_size": 256,
   "num_steps": 1000,
   "dataset_dir": "datasets/tiny_stories",
   "train_data_path": "datasets/tiny_stories/eval.bin",
