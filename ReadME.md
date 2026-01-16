@@ -15,6 +15,8 @@ CS336: Language Modeling from Scratch <br/>
     - [Genrated Sample](#genrated-sample)
   - [Bonus: MoE Layer](#bonus-moe-layer)
 - [Assignment 02: Flash Attention \& Parallelism](#assignment-02-flash-attention--parallelism)
+  - [Flash Attention](#flash-attention)
+  - [Parallelism](#parallelism)
 - [Assignment 03: Scaling Laws](#assignment-03-scaling-laws)
 - [Assignment 04: Data](#assignment-04-data)
 - [Assignment 05: Alignment \& RLHF (GRPO)](#assignment-05-alignment--rlhf-grpo)
@@ -255,10 +257,41 @@ As we can see, the MoE model with smaller `d_ff` outperforms the dense model wit
 
 
 # Assignment 02: Flash Attention & Parallelism
+![](./assets/ass02-test.png)
 
-```Python
-raise NotImplementedError("This is a placeholder for Assignment 02 solution.")
+
+## Flash Attention 
+
+Use we the Triton to implement the Flash Attention, and training on the same model as in Assignment 01. Below are the learning curves. As we can see, due to the same seed and configuration, the Flash Attention implementation matches the standard attention implementation very well.
+
+![](./assets/ass02-train.png)
+
+We compare the training speed of Flash Attention and standard attention below:
+
+![](./assets/attention_bench_backward_bfloat16.png)
+![](./assets/attention_bench_forward_bfloat16.png)
+![](./assets/attention_bench_fwd+bwd_bfloat16.png)
+
+As we can see, the Flash Attention implementation is significantly faster than the standard attention implementation, especially for longer sequence lengths and forward process. However, for backward process, the speedup is less significant, it might be due to the overhead of custom CUDA kernel launches in Triton. Overall, Flash Attention provides a substantial speedup for attention computation in transformer models.
+
+
+
+## Parallelism
+
+We have implemented the data parallelism in the `assignment2-systems/cs336_systems/parallel/ddp_bucket.py` file. And we can run the distributed training using following command:
+
+```bash
+cd assignment2-systems
+./scripts/train_pp_flashattention.sh
 ```
+
+to training the model with Flash Attention and Data Parallelism.
+
+
+>[!note]
+> Due to the limitation of my current hardware, I am not able to fully test the data parallelism implementation. When I run the above command, it actually **SLOWER** than single GPU training, which might be due to the overhead of process communication outweighing the benefits of parallelism on my single machine with limited resources. However, I have verified the correctness of the implementation through unit tests and code review. I believe that on a proper multi-GPU setup, the data parallelism implementation will provide significant speedup for training large models.
+
+
 
 
 # Assignment 03: Scaling Laws 
