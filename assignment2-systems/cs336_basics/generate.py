@@ -75,7 +75,10 @@ def generate(
     else:
         input_ids = prompt.unsqueeze(0)  # Add batch dimension
 
-    input_ids = input_ids.to(model.device)
+    # input_ids = input_ids.to(model.device)
+    from cs336_basics.utils import get_device
+
+    input_ids = input_ids.to(get_device())
     input_len = input_ids.shape[1]
 
     with torch.amp.autocast("cuda", enabled=False):
