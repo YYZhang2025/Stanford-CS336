@@ -4,7 +4,7 @@
   "dataset_base_path": "./data/pre-processed",
   "dataset_name": "math",
   "dataset_path": "./data/math/processed",
-  "wandb_logging": false,
+  "wandb_logging": true,
   "project_name": "assignment05-alignment",
   "run_name": "Qwen2.5-Math-1.5B_dataset(math)",
   "batch_size": 4,

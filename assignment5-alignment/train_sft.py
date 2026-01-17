@@ -43,9 +43,9 @@ def main(
 
     model = AutoModelForCausalLM.from_pretrained(
         pretrained_model_name_or_path=train_config.model_name,
-        torch_dtype=torch.float16,
-        # torch_dtype=torch.bfloat16,
-        # attn_implementation="flash_attention_2",
+        # torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
+        attn_implementation="flash_attention_2",
         device_map="cpu",
     )
     device = get_device()
@@ -62,7 +62,7 @@ def main(
     # Cleanup
     if train_config.wandb_logging:
         wandb.finish()
-    vllm.shutdown()
+    # vllm.shutdown()
 
 
 if __name__ == "__main__":
