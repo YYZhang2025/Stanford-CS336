@@ -394,9 +394,9 @@ class SFTTrainer:
         print_color("Sampled Responses:", color="cyan")
         for i, (prompt, response, true_answer) in enumerate(zip(prompts, responses, true_answers)):
             print_color(f"=== Example {i + 1} ===", color="cyan")
-            print_color(f"[green]Prompt[green]:{prompt}", color="cyan")
-            print_color(f"[green]Response[green]:{response}", color="cyan")
-            print_color(f"[green]True Answer[green]:{true_answer}\n", color="cyan")
+            print_color(f"[green]Prompt[green]: {prompt}", color="cyan")
+            print_color(f"[green]Response[green]: {response}", color="cyan")
+            print_color(f"[green]True Answer[green]: {true_answer}\n", color="cyan")
 
         return responses
 
@@ -447,9 +447,9 @@ class SFTTrainer:
         print_color(
             "||Total training steps: "
             + str(self.train_config.total_training_steps)
-            + " Batch size: "
+            + " | Batch size: "
             + str(self.train_config.batch_size)
-            + " Gradient accumulation steps: "
+            + " | Gradient accumulation steps: "
             + str(self.train_config.gradient_accumulation_steps),
             color="green",
         )
@@ -478,7 +478,7 @@ class SFTTrainer:
                 f"Step {step + 1}/{self.train_config.total_training_steps}, Loss: {loss:.4f}, Lr: {get_lr(self.optimizer):.6f}\n"
             )
 
-            if (step + 1) % 2 == 0:
+            if (step + 1) % self.train_config.sample_interval == 0:
                 # clear_memory()
                 self.sample_responses(
                     vllm=vllm,

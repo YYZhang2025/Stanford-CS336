@@ -21,13 +21,13 @@ class TrainConfig:
     run_name: str = ""
 
     # Training hyperparameters
-    batch_size: int = 2
-    total_training_steps: int = 10
-    gradient_accumulation_steps: int = 2
+    batch_size: int = 8
+    total_training_steps: int = 2000
+    gradient_accumulation_steps: int = 10
     betas: tuple = field(default=(0.9, 0.98))
     weight_decay: float = 1e-5
-    max_lr: float = 3e-4
-    min_lr: float = 1e-5
+    max_lr: float = 1e-5
+    min_lr: float = 1e-6
     warmup_steps: int = 500
     max_grad_norm: float = 1.0
 
@@ -38,6 +38,7 @@ class TrainConfig:
     eval_batch_size: int = 4
     eval_steps: int = 5
     seed: int = 42
+    sample_interval: int = 20
 
     def __post_init__(self):
         self.run_name = f"{self.model_name.split('/')[-1]}_dataset({self.dataset_name})"
