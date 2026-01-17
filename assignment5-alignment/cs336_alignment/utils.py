@@ -1,7 +1,14 @@
+import gc
 from contextlib import nullcontext
 
 import rich
 import torch
+
+
+def clear_memory():
+    gc.collect()
+    torch.cuda.empty_cache()
+    torch.cuda.ipc_collect()
 
 
 def to_float(x):
@@ -28,13 +35,21 @@ def get_ctx(use_mixed: bool, device: torch.device, verbose: bool = True):
         if verbose:
             print_color("Using mixed precision on CUDA with BFloat16", "blue")
         return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+    elif use_mixed and device.type == "mps":
+        if verbose:
+            print_color("Using mixed precision on MPS with Float16", "blue")
+        return torch.autocast(device_type="mps", dtype=torch.float16)
+    elif use_mixed and device.type == "cpu":
+        if verbose:
+            print_color("Using mixed precision on CPU with Float16", "blue")
+        return torch.autocast(device_type="cpu", dtype=torch.float16)
     else:
         if verbose:
             print_color("Not using mixed precision", "blue")
         return nullcontext()
 
 
-def get_device(verbose: bool = True, use_mps: bool = False) -> torch.device:
+def get_device(verbose: bool = True, use_mps: bool = True) -> torch.device:
     if torch.cuda.is_available():
         if verbose:
             print_color("Using CUDA device", "blue")
@@ -47,3 +62,18 @@ def get_device(verbose: bool = True, use_mps: bool = False) -> torch.device:
         if verbose:
             print_color("Using CPU device", "blue")
         return torch.device("cpu")
+
+
+def save_model_checkpoint(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    cur_step: int,
+    checkpoint_path: str,
+):
+    state = {
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "step": cur_step,
+    }
+    torch.save(state, checkpoint_path)
+    print_color(f"Saved model checkpoint to {checkpoint_path}", "cyan")

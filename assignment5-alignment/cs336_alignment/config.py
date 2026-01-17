@@ -4,19 +4,14 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-DATASET_NAME_TO_PATH = {
-    "math": "./data/math/processed",
-    "gsm8k": "./data/gsm8k",
-    "alpaca_eval": "./data/alpaca_eval",
-    "mmlu": "./data/mmlu",
-}
-
 
 @dataclass
 class TrainConfig:
-    model_name: str = "Qwen/Qwen2.5-Math-1.5B"
-    prompt_path: str = "./cs336_alignment/prompts/r1_zero.prompt"
-    # Choices: "math", "gsm8k", "alpaca_eval", "mmlu"
+    model_name: str = "./models/Qwen/Qwen2.5-Math-1.5B"
+    prompt_template_path: str = "./cs336_alignment/prompts/r1_zero.prompt"
+
+    # Choices: "math", "gsm8k",  "mmlu"
+    dataset_base_path: str = "./data/pre-processed"
     dataset_name: str = "math"
     dataset_path: str = ""  # will be set in __post_init__
 
@@ -26,7 +21,7 @@ class TrainConfig:
     run_name: str = ""
 
     # Training hyperparameters
-    batch_size: int = 8
+    batch_size: int = 2
     total_training_steps: int = 10
     gradient_accumulation_steps: int = 2
     betas: tuple = field(default=(0.9, 0.98))
@@ -38,13 +33,13 @@ class TrainConfig:
 
     mixed_precision_training: bool = True
 
+    checkpoint_dir: str = "./checkpoints"
+    save_interval: int = 2
+    eval_batch_size: int = 4
+    eval_steps: int = 5
     seed: int = 42
 
     def __post_init__(self):
-        if self.dataset_name not in DATASET_NAME_TO_PATH:
-            raise ValueError(f"Unsupported dataset_name: {self.dataset_name}")
-        self.dataset_path: str = DATASET_NAME_TO_PATH[self.dataset_name]
-
         self.run_name = f"{self.model_name.split('/')[-1]}_dataset({self.dataset_name})"
 
     @classmethod
