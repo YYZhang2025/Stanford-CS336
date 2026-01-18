@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import wandb
 from torch.utils.data import Dataset
+from tqdm import trange
 from transformers import AutoTokenizer, PreTrainedModel
 from vllm import SamplingParams
 
@@ -291,7 +292,7 @@ class SFTTrainer:
     def _load_into_vllm(self, vllm):
         load_policy_into_vllm_instance(self.model, vllm)
         print_color(
-            f"Loaded SFT model weights at step {self.start_step} into VLLM instance for evaluation.",
+            f"Loaded SFT model weights at step {self.cur_step} into VLLM instance for evaluation.",
             color="magenta",
         )
 
@@ -347,12 +348,11 @@ class SFTTrainer:
     ) -> float:
         batch_loss = 0.0
 
-        for micro_step in range(self.train_config.gradient_accumulation_steps):
-            print_color(
-                f"    Microbatch step {micro_step + 1}/{self.train_config.gradient_accumulation_steps}",
-                color="blue",
-            )
-
+        for _ in trange(
+            self.train_config.gradient_accumulation_steps,
+            desc="micro-batches",
+            leave=False,
+        ):
             batch = next(self.train_dataloader)
             input_ids = batch["input_ids"].to(self.device, non_blocking=True)
             labels = batch["labels"].to(self.device, non_blocking=True)
@@ -415,7 +415,7 @@ class SFTTrainer:
             loss = self.train_step()
 
             print_color(
-                f"Step {self.cur_step}/{self.train_config.total_training_steps}, Loss: {loss:.4f}, Lr: {get_lr(self.optimizer):.6f}\n"
+                f"Step {self.cur_step}/{self.train_config.total_training_steps}, Loss: {loss:.4f}, Lr: {get_lr(self.optimizer):.7f}\n"
             )
 
             log_dict = {}
@@ -434,7 +434,8 @@ class SFTTrainer:
                 log_dict["eval/answer_accuracy"] = out["answer_accuracy"]
                 log_dict["eval/answer_correct"] = out["answer_correct"]
                 log_dict["eval/format_correct"] = out["format_correct"]
-                log_dict["eval/format_wrong"] = out["format_wrong"]
+                log_dict["eval/answer_corrected_but_format_wrong"] = out["answer_corrected_but_format_wrong"]
+                log_dict["eval/formatted_but_answer_wrong"] = out["formatted_but_answer_wrong"]
                 log_dict["eval/reward_1"] = out["reward_1"]
 
             if self.train_config.wandb_logging:

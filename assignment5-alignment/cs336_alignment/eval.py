@@ -30,9 +30,9 @@ def evaluate_responses(vllm, prompts, answers, sampling_params):
         "total": len(responses),
         "answer_correct": 0,
         "format_correct": 0,
-        "answer_wrong": 0,
-        "format_wrong": 0,
         "reward_1": 0,
+        "formatted_but_answer_wrong": 0,
+        "answer_corrected_but_format_wrong": 0,
         "answer_accuracy": 0.0,
     }
 
@@ -41,13 +41,13 @@ def evaluate_responses(vllm, prompts, answers, sampling_params):
 
         if r["format_reward"] == 1.0:
             overview["format_correct"] += 1
-        else:
-            overview["format_wrong"] += 1
+        elif r["answer_reward"] == 1.0:
+            overview["answer_corrected_but_format_wrong"] += 1
 
         if r["answer_reward"] == 1.0:
             overview["answer_correct"] += 1
         elif r["format_reward"] == 1.0:
-            overview["answer_wrong"] += 1  # formatted but incorrect
+            overview["formatted_but_answer_wrong"] += 1
 
         if r["reward"] == 1.0:
             overview["reward_1"] += 1

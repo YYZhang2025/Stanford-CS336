@@ -9,6 +9,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
+from cs336_alignment.dataset_utils.utils import wrap_cot_with_answer
+
 
 def extract_gsm8k_answer(answer: str) -> str:
     ANS_RE = re.compile(r"####\s*([\-0-9\.\,]+)")
@@ -39,6 +41,6 @@ def process_row(row: Dict[str, Any]):
     clean_cot = re.sub(r"\s*\n####\s*-?\d+(?:\.\d+)?\s*$", "", cot)
     answer = extract_gsm8k_answer(row["answer"])
 
-    clean_cot = f"{clean_cot}\n</think>\n<answer>{answer}</answer>"
+    clean_cot = wrap_cot_with_answer(clean_cot, answer)
 
     return problem, str(clean_cot), str(answer).lower() if answer is not None else None

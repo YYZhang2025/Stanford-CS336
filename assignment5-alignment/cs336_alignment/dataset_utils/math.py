@@ -5,8 +5,8 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 from math_verify import ExprExtractionConfig, LatexExtractionConfig, parse
-from sympy import cot
 
+from cs336_alignment.dataset_utils.utils import wrap_cot_with_answer
 from cs336_alignment.drgrpo_grader import extract_answer
 
 # Regex: capture ints / floats / fractions; we will pick the LAST match as a fallback.
@@ -89,7 +89,7 @@ def process_row(row: Dict[str, Any]):
         answer = extract_final_answer_from_text(cot)
     else:
         answer = row["answer"]
-    cot = f"{cot}\n</think>\n<answer>{str(answer)}</answer>"
+        cot = wrap_cot_with_answer(cot, answer)
 
     return problem, str(cot), str(answer).lower() if answer is not None else None
 
