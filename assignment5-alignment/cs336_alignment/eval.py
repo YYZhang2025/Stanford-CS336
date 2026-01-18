@@ -4,10 +4,10 @@ from torch.utils.data import Dataset
 from vllm import LLM, SamplingParams
 
 from cs336_alignment.drgrpo_grader import extract_answer, r1_zero_reward_fn
-from cs336_alignment.eval import evaluate_responses
 from cs336_alignment.utils import (
     get_device,
     print_color,
+    print_rich_dict,
 )
 from cs336_alignment.vllm_utils import generate_responses, init_vllm
 
@@ -20,34 +20,39 @@ def extract_reference_answer(response: str) -> str:
     return model_answer
 
 
-def evaluate_responses(
-    vllm: LLM,
-    prompts: list[str],
-    answers: list[str],
-    sampling_params,
-):
+def evaluate_responses(vllm, prompts, answers, sampling_params):
     responses = generate_responses(vllm, prompts, sampling_params)
-    allinfo_list = []
-    for response, answer, prompt in zip(responses, answers, prompts):
-        reward_dict = r1_zero_reward_fn(response, ground_truth=answer)
-        allinfo_list.append(reward_dict)
 
-    # Gather statistics
+    # Safety: avoid silent truncation if lengths mismatch
+    assert len(responses) == len(answers) == len(prompts)
+
     overview = {
         "total": len(responses),
-        "correct": 0,
-        "format_wrong": 0,
+        "answer_correct": 0,
+        "format_correct": 0,
         "answer_wrong": 0,
+        "format_wrong": 0,
+        "reward_1": 0,
+        "answer_accuracy": 0.0,
     }
 
-    for reward_dict in allinfo_list:
-        if reward_dict["reward"] == 1:
-            overview["correct"] += 1
-        elif not reward_dict["format_reward"]:
-            overview["format_wrong"] += 1
-        else:
-            overview["answer_wrong"] += 1
+    for response, gt in zip(responses, answers):
+        r = r1_zero_reward_fn(response, ground_truth=gt)
 
+        if r["format_reward"] == 1.0:
+            overview["format_correct"] += 1
+        else:
+            overview["format_wrong"] += 1
+
+        if r["answer_reward"] == 1.0:
+            overview["answer_correct"] += 1
+        elif r["format_reward"] == 1.0:
+            overview["answer_wrong"] += 1  # formatted but incorrect
+
+        if r["reward"] == 1.0:
+            overview["reward_1"] += 1
+
+    overview["answer_accuracy"] = overview["answer_correct"] / overview["total"]
     return overview
 
 
@@ -110,7 +115,7 @@ if __name__ == "__main__":
 
     vllm = init_vllm(
         model_id=MODEL_NAME,
-        device=get_device(rank=1),
+        device=str(get_device(rank=1)),
         seed=42,
         gpu_memory_utilization=0.85,
     )
@@ -119,22 +124,22 @@ if __name__ == "__main__":
         max_tokens=1024, temperature=1, top_p=1, stop=["</answer>"], include_stop_str_in_output=True
     )
 
-    print_color("Evaluating Training Set...", color="cyan")
-    train_overview = evaluate_responses(
-        vllm=vllm,
-        prompts=train_prompts,
-        answers=train_answers,
-        sampling_params=sampling_params,
-    )
-    print_color(f"Training Set Evaluation: {train_overview}", color="green")
-    train_overview["accuracy"] = train_overview["correct"] / train_overview["total"]
+    # print_color("Evaluating Training Set...", color="cyan")
+    # train_overview = evaluate_responses(
+    #     vllm=vllm,
+    #     prompts=train_prompts,
+    #     answers=train_answers,
+    #     sampling_params=sampling_params,
+    # )
+    # print_color(f"Training Set Evaluation: {train_overview}", color="green")
+    # train_overview["accuracy"] = train_overview["correct"] / train_overview["total"]
 
-    print_color(
-        f"SFT Evaluation Results - Total: {train_overview['total']}, Correct: {train_overview['correct']}, "
-        f"Format Wrong: {train_overview['format_wrong']}, Answer Wrong: {train_overview['answer_wrong']}, "
-        f"Accuracy: {train_overview['accuracy']:.4f}",
-        color="magenta",
-    )
+    # print_color(
+    #     f"SFT Evaluation Results - Total: {train_overview['total']}, Correct: {train_overview['correct']}, "
+    #     f"Format Wrong: {train_overview['format_wrong']}, Answer Wrong: {train_overview['answer_wrong']}, "
+    #     f"Accuracy: {train_overview['accuracy']:.4f}",
+    #     color="magenta",
+    # )
     print_color("Evaluating Test Set...", color="cyan")
     test_overview = evaluate_responses(
         vllm=vllm,
@@ -144,10 +149,4 @@ if __name__ == "__main__":
     )
 
     print_color(f"Test Set Evaluation: {test_overview}", color="green")
-    test_overview["accuracy"] = test_overview["correct"] / test_overview["total"]
-    print_color(
-        f"SFT Evaluation Results - Total: {test_overview['total']}, Correct: {test_overview['correct']}, "
-        f"Format Wrong: {test_overview['format_wrong']}, Answer Wrong: {test_overview['answer_wrong']}, "
-        f"Accuracy: {test_overview['accuracy']:.4f}",
-        color="magenta",
-    )
+    print_rich_dict(test_overview)

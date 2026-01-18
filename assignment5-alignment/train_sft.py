@@ -1,3 +1,4 @@
+import logging
 import os
 
 import dotenv
@@ -15,9 +16,9 @@ def main(
     train_config_path: str = "configs/sft/train_config.json",
     dataset_name: str = "math",
 ):
+    logging.getLogger("vllm").setLevel(logging.WARNING)
     dotenv.load_dotenv()
     train_config = TrainConfig.from_json(train_config_path)
-    train_config.to_json(os.path.join(train_config.checkpoint_dir, "train_config_used.json"))
     train_config.dataset_name = dataset_name
 
     # init vllm
@@ -39,6 +40,7 @@ def main(
     model.to(device)
     print_color(f"Loaded model and tokenizer: {train_config.model_name}", color="cyan")
 
+    train_config.to_json(os.path.join(train_config.checkpoint_dir, "train_config.json"))
     if train_config.wandb_logging:
         import wandb
 
@@ -60,6 +62,7 @@ def main(
         device=device,
     )
     sft_trainer.train(vllm=vllm)
+
     # Cleanup
     if train_config.wandb_logging:
         wandb.finish()

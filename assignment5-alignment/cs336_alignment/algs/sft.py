@@ -17,6 +17,7 @@ from cs336_alignment.utils import (
     cycle_dataloader,
     get_ctx,
     print_color,
+    print_rich_dict,
     save_model_checkpoint,
     to_float,
 )
@@ -287,15 +288,17 @@ class SFTTrainer:
         )
         return trainer
 
-    @torch.no_grad()
-    def evaluate(self, vllm=None):
-        print_color("Evaluating SFT model on test dataset...", color="magenta")
-
+    def _load_into_vllm(self, vllm):
         load_policy_into_vllm_instance(self.model, vllm)
         print_color(
             f"Loaded SFT model weights at step {self.start_step} into VLLM instance for evaluation.",
             color="magenta",
         )
+
+    @torch.no_grad()
+    def evaluate(self, vllm=None):
+        print_color("Evaluating SFT model on test dataset...", color="magenta")
+        self._load_into_vllm(vllm)
 
         prompts = self.test_dataset.prompts
         true_answers = self.test_dataset.answers
@@ -307,14 +310,8 @@ class SFTTrainer:
             sampling_params=self.sampling_params,
         )
 
-        overview["accuracy"] = overview["correct"] / overview["total"]
-
-        print_color(
-            f"SFT Evaluation Results - Total: {overview['total']}, Correct: {overview['correct']}, "
-            f"Format Wrong: {overview['format_wrong']}, Answer Wrong: {overview['answer_wrong']}, "
-            f"Accuracy: {overview['accuracy']:.4f}",
-            color="magenta",
-        )
+        print_color("Evaluation Overview:", color="magenta")
+        print_rich_dict(overview)
         return overview
 
     @torch.no_grad()
@@ -324,15 +321,12 @@ class SFTTrainer:
         num_samples: int = 5,
     ) -> list[str]:
         print_color(f"Sampling {num_samples} responses from SFT model...", color="cyan")
+        self._load_into_vllm(vllm)
+
         index = random.sample(range(len(self.test_dataset)), k=num_samples)
         prompts = [self.test_dataset.prompts[i] for i in index]
         true_answers = [self.test_dataset.answers[i] for i in index]
 
-        load_policy_into_vllm_instance(self.model, vllm)
-        print_color(
-            f"Loaded SFT model weights at step {self.cur_step} into VLLM instance for sampling.",
-            color="cyan",
-        )
         responses = generate_responses(
             vllm,
             prompts,
@@ -410,21 +404,22 @@ class SFTTrainer:
         print_color("||" + "=" * 80, color="green")
 
         for step in range(self.start_step, self.train_config.total_training_steps):
-            self.cur_step = step + 1
-
-            log_dict = {}
             self.model.train()
+
+            self.cur_step = step + 1
             print_color(
                 f"Starting training step {self.cur_step}/{self.train_config.total_training_steps}",
                 color="yellow",
             )
 
             loss = self.train_step()
-            log_dict["train/loss"] = loss
 
             print_color(
                 f"Step {self.cur_step}/{self.train_config.total_training_steps}, Loss: {loss:.4f}, Lr: {get_lr(self.optimizer):.6f}\n"
             )
+
+            log_dict = {}
+            log_dict["train/loss"] = loss
 
             if self.cur_step % self.train_config.sample_interval == 0:
                 clear_memory()
@@ -435,10 +430,12 @@ class SFTTrainer:
             if self.cur_step % self.train_config.eval_steps == 0:
                 clear_memory()
                 out = self.evaluate(vllm)
-                log_dict["eval/accuracy"] = out["accuracy"]
-                log_dict["eval/correct"] = out["correct"]
+
+                log_dict["eval/answer_accuracy"] = out["answer_accuracy"]
+                log_dict["eval/answer_correct"] = out["answer_correct"]
+                log_dict["eval/format_correct"] = out["format_correct"]
                 log_dict["eval/format_wrong"] = out["format_wrong"]
-                log_dict["eval/answer_wrong"] = out["answer_wrong"]
+                log_dict["eval/reward_1"] = out["reward_1"]
 
             if self.train_config.wandb_logging:
                 wandb.log(log_dict, step=self.cur_step)

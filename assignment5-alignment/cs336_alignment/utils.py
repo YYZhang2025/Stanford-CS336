@@ -30,6 +30,13 @@ def print_color(text: str, color: str = "red"):
     rich.print(f"[{color}]{text}[/{color}]")
 
 
+def print_rich_dict(data: dict) -> None:
+    from rich.pretty import pprint
+
+    """Pretty print dictionary with colors using rich."""
+    pprint(data, expand_all=True)
+
+
 def get_ctx(use_mixed: bool, device: torch.device, verbose: bool = True):
     if use_mixed and device.type == "cuda":
         if verbose:
