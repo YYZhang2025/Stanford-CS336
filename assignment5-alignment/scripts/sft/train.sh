@@ -8,8 +8,9 @@ cd "$REPO_ROOT"
 
 
 TRAIN_CONFIG_JSON="./configs/sft/train_config.json"
+# Dataset name can be 'math' 'gsm8k' 'mmlu' for now
 DATASET_NAME="math"
 
-uv run python train.py \
+uv run python train_sft.py \
   --train_config_json "$TRAIN_CONFIG_JSON" \
   --dataset_name "$DATASET_NAME"
