@@ -5,12 +5,12 @@ import random
 import torch
 import torch.nn as nn
 import wandb
-from torch.utils.data import Dataset
 from tqdm import trange
 from transformers import AutoTokenizer, PreTrainedModel
 from vllm import SamplingParams
 
 from cs336_alignment.config import TrainConfig
+from cs336_alignment.dataset import ReasoningDataset, collate_fn
 from cs336_alignment.eval import evaluate_responses
 from cs336_alignment.lr import get_lr, update_learning_rate
 from cs336_alignment.utils import (
@@ -23,60 +23,6 @@ from cs336_alignment.utils import (
     to_float,
 )
 from cs336_alignment.vllm_utils import generate_responses, load_policy_into_vllm_instance
-
-
-def tokenize_prompt_and_output(
-    prompt_strs: list[str],
-    output_strs: list[str],
-    tokenizer,
-) -> dict[str, torch.Tensor]:
-    prompt_tokens = tokenizer(
-        prompt_strs,
-        add_special_tokens=False,
-        padding=False,
-        truncation=False,
-        return_attention_mask=False,
-    )
-
-    output_tokens = tokenizer(
-        output_strs,
-        add_special_tokens=False,
-        padding=False,
-        truncation=False,
-        return_attention_mask=False,
-    )
-
-    input_ids = []
-    response_mask = []
-
-    for p_ids, o_ids in zip(prompt_tokens["input_ids"], output_tokens["input_ids"]):
-        combined_ids = p_ids + o_ids
-        input_ids.append(combined_ids)
-
-        mask = ([False] * len(p_ids)) + ([True] * len(o_ids))
-        response_mask.append(mask)
-
-    max_len = max(len(ids) for ids in input_ids)
-    pad_id = tokenizer.pad_token_id
-
-    def pad_to(x, value):
-        return x + [value] * (max_len - len(x))
-
-    full = torch.tensor([pad_to(x, pad_id) for x in input_ids], dtype=torch.long)
-    input_ids = full[:, :-1].contiguous()
-    labels = full[:, 1:].contiguous()
-    response_mask = torch.tensor([pad_to(x, False) for x in response_mask], dtype=torch.bool)[
-        :, 1:
-    ].contiguous()
-
-    assert input_ids.shape == labels.shape == response_mask.shape, (
-        "Shapes of input_ids, labels, and response_mask must match"
-    )
-    return {
-        "input_ids": input_ids,
-        "labels": labels,
-        "response_mask": response_mask,
-    }
 
 
 def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
@@ -105,7 +51,7 @@ def get_response_log_probs(
 
 
 def masked_normalize(
-    tensor: torch.Tensor, mask: torch.Tensor, normalize_constant: int = 1, dim: int | None = None
+    tensor: torch.Tensor, mask: torch.Tensor, normalize_constant: float = 1.0, dim: int | None = None
 ) -> torch.Tensor:
     assert tensor.shape == mask.shape, "Tensor and mask must have the same shape"
 
@@ -117,7 +63,7 @@ def sft_microbatch_train_step(
     policy_log_probs: torch.Tensor,
     response_mask: torch.Tensor,
     gradient_accumulation_steps: int,
-    normalize_constant: int = 1,
+    normalize_constant: float = 1.0,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """
     policy_log_probs: (batch_size, seq_len) - log probabilities from the policy model
@@ -141,65 +87,6 @@ def sft_microbatch_train_step(
         "loss_unscaled": loss_unscaled.detach(),
     }
     return loss_scaled.detach(), metadata
-
-
-class SFTDataset(Dataset):
-    def __init__(self, questions: list[str], cots: list[str], answers: list[str], prompt_template_path: str):
-        self.questions = questions
-        self.cots = cots
-        self.answers = answers
-
-        with open(prompt_template_path, "r", encoding="utf-8") as f:
-            self.prompt_template = f.read()
-
-        self.prompts = [self.prompt_template.format(question=q) for q in self.questions]
-
-    def __len__(self):
-        return len(self.questions)
-
-    def __getitem__(self, idx):
-        prompt = self.prompts[idx]
-        cot = self.cots[idx]
-        answer = self.answers[idx]
-
-        return prompt, cot, answer
-
-    @classmethod
-    def load_from_disk(cls, path: str, prompt_template_path: str):
-        rows = []
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                rows.append(json.loads(line))
-        questions = []
-        cots = []
-        answers = []
-        for row in rows:
-            questions.append(row["question"])
-            cots.append(row["cot"])
-            answers.append(row["answer"])
-
-        return cls(questions, cots, answers, prompt_template_path=prompt_template_path)
-
-
-def collate_fn(batch, tokenizer):
-    """
-    return:
-        {
-            "input_ids": input_ids,
-            "labels": labels,
-            "response_mask": response_mask,
-        }
-    """
-    prompts, cots, answers = zip(*batch)
-    tokenized = tokenize_prompt_and_output(
-        prompt_strs=list(prompts),
-        output_strs=list(cots),
-        tokenizer=tokenizer,
-    )
-
-    tokenized["prompts"] = list(prompts)
-    tokenized["answers"] = list(answers)
-    return tokenized
 
 
 class SFTTrainer:
@@ -230,16 +117,12 @@ class SFTTrainer:
         )
 
         dataset_dir = os.path.join(dataset_dir_base, train_config.dataset_name)
-        train_dataset = SFTDataset.load_from_disk(
+        train_dataset = ReasoningDataset.load_from_disk(
             os.path.join(dataset_dir, "train.jsonl"), train_config.prompt_template_path
         )
-
-        self.sample_dataset = [train_dataset[i] for i in range(2)]
-
-        test_dataset = SFTDataset.load_from_disk(
+        self.test_dataset = ReasoningDataset.load_from_disk(
             os.path.join(dataset_dir, "test.jsonl"), train_config.prompt_template_path
         )
-        self.test_dataset = test_dataset
 
         self.train_dataloader = cycle_dataloader(
             torch.utils.data.DataLoader(
@@ -250,6 +133,7 @@ class SFTTrainer:
                 drop_last=False,
             )
         )
+
         self.checkpoint_path = os.path.join(
             train_config.checkpoint_dir,
             f"sft_{train_config.model_name.split('/')[-1]}_{train_config.dataset_name}",
@@ -353,10 +237,10 @@ class SFTTrainer:
             desc="micro-batches",
             leave=False,
         ):
-            batch = next(self.train_dataloader)
-            input_ids = batch["input_ids"].to(self.device, non_blocking=True)
-            labels = batch["labels"].to(self.device, non_blocking=True)
-            response_mask = batch["response_mask"].to(self.device, non_blocking=True)
+            micro_batch = next(self.train_dataloader)
+            input_ids = micro_batch["input_ids"].to(self.device, non_blocking=True)
+            labels = micro_batch["labels"].to(self.device, non_blocking=True)
+            response_mask = micro_batch["response_mask"].to(self.device, non_blocking=True)
 
             with self.ctx:
                 policy_outputs = get_response_log_probs(
@@ -429,6 +313,7 @@ class SFTTrainer:
 
             if self.cur_step % self.train_config.eval_steps == 0:
                 clear_memory()
+
                 out = self.evaluate(vllm)
 
                 log_dict["eval/answer_accuracy"] = out["answer_accuracy"]

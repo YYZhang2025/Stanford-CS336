@@ -1,4 +1,3 @@
-import json
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -6,8 +5,8 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 from math_verify import ExprExtractionConfig, LatexExtractionConfig, parse
 
-from cs336_alignment.dataset_utils.utils import wrap_cot_with_answer
 from cs336_alignment.drgrpo_grader import extract_answer
+from cs336_alignment.utils import wrap_cot_with_answer
 
 # Regex: capture ints / floats / fractions; we will pick the LAST match as a fallback.
 _NUM_RE = re.compile(r"(?<!\w)-?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:/\d+)?(?!\w)")
@@ -92,35 +91,3 @@ def process_row(row: Dict[str, Any]):
         cot = wrap_cot_with_answer(cot, answer)
 
     return problem, str(cot), str(answer).lower() if answer is not None else None
-
-
-def process_math(data_dir: str, prompt_template: str):
-    train_prompts = []
-    train_cots = []
-    train_answers = []
-
-    test_prompts = []
-    test_cots = []
-    test_answers = []
-
-    train_rows = collect_rows(data_dir, filename="train-00000-of-00001.parquet")
-    test_rows = collect_rows(data_dir, filename="test-00000-of-00001.parquet")
-
-    for row in train_rows[:5]:
-        problem, cot, answer = process_row(row)
-        prompt = prompt_template.format(question=problem)
-        train_prompts.append(prompt)
-        train_cots.append(str(cot))
-        train_answers.append(str(answer).lower() if answer is not None else None)
-
-    for row in test_rows[:10]:
-        problem, cot, answer = process_row(row)
-        prompt = prompt_template.format(question=problem)
-        test_prompts.append(prompt)
-        test_cots.append(str(cot))
-        test_answers.append(str(answer).lower() if answer is not None else None)
-
-    return {
-        "train": (train_prompts, train_cots, train_answers),
-        "test": (test_prompts, test_cots, test_answers),
-    }

@@ -1,15 +1,15 @@
+import json
+from pathlib import Path
+from typing import Any, Dict, List
+
 import regex as re
+
+from cs336_alignment.utils import wrap_cot_with_answer
 
 """ 
 {"question": "Janet\u2019s ducks lay 16 eggs per day. She eats three for breakfast every morning and bakes muffins for her friends every day with four. She sells the remainder at the farmers' market daily for $2 per fresh duck egg. How much in dollars does she make every day at the farmers' market?", 
 "answer": "Janet sells 16 - 3 - 4 = <<16-3-4=9>>9 duck eggs a day.\nShe makes 9 * 2 = $<<9*2=18>>18 every day at the farmer\u2019s market.\n#### 18"}
 """
-
-import json
-from pathlib import Path
-from typing import Any, Dict, List
-
-from cs336_alignment.dataset_utils.utils import wrap_cot_with_answer
 
 
 def extract_gsm8k_answer(answer: str) -> str:
