@@ -1,5 +1,5 @@
 {
-  "model_name": "./models/Qwen/Qwen2.5-Math-1.5B",
+  "model_name": "Qwen/Qwen2.5-Math-1.5B",
   "prompt_template_path": "./cs336_alignment/prompts/r1_zero.prompt",
   "dataset_base_path": "./data/pre-processed",
   "dataset_name": "math",

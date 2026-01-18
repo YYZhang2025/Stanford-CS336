@@ -7,7 +7,7 @@ from typing import Any
 
 @dataclass
 class TrainConfig:
-    model_name: str = "./models/Qwen/Qwen2.5-Math-1.5B"
+    model_name: str = "Qwen/Qwen2.5-Math-1.5B"
     prompt_template_path: str = "./cs336_alignment/prompts/r1_zero.prompt"
 
     # Dataset Choices: "math", "gsm8k",  "mmlu"

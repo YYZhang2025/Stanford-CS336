@@ -84,3 +84,15 @@ def save_model_checkpoint(
     }
     torch.save(state, checkpoint_path)
     print_color(f"Saved model checkpoint to {checkpoint_path}", "cyan")
+
+
+def seed_everything(seed: int):
+    import random
+
+    import numpy as np
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
