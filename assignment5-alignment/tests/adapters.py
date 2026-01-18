@@ -4,6 +4,7 @@ import os
 from typing import Any, Callable, Literal
 
 import torch
+from prompt_toolkit import prompt
 from torch import Tensor
 from torch.utils.data import Dataset
 from transformers import PreTrainedTokenizerBase
@@ -32,7 +33,7 @@ def run_tokenize_prompt_and_output(
                 a mask on the response tokens in `labels`.
     """
     # raise NotImplementedError
-    from cs336_alignment.dataset import tokenize_prompt_and_output
+    from cs336_alignment.datasets import tokenize_prompt_and_output
 
     return tokenize_prompt_and_output(
         prompt_strs=prompt_strs,
@@ -338,7 +339,71 @@ def get_packed_sft_dataset(
         "input_ids" contains the token IDs for the language modeling inputs, and "labels" contains
         the token IDs for the language modeling labels.
     """
-    raise NotImplementedError
+    # raise NotImplementedError
+    import json
+
+    class PackedSFTDataset(Dataset):
+        def __init__(
+            self,
+            tokenizer: PreTrainedTokenizerBase,
+            dataset_path: str | os.PathLike,
+            seq_length: int,
+            shuffle: bool,
+        ):
+            self.tokenizer = tokenizer
+            self.seq_length = seq_length
+
+            self.questions = []
+            self.answers = []
+            self.responses = []
+            with open(dataset_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    row = json.loads(line)
+                    self.questions.append(row["question"])
+                    self.answers.append(row["answer"])
+                    self.responses.append(row["cot"])
+            if shuffle:
+                import random
+
+                combined = list(zip(self.questions, self.answers, self.responses))
+                random.shuffle(combined)
+                self.questions[:], self.answers[:], self.responses[:] = zip(*combined)
+
+        def __len__(self):
+            return len(self.questions)
+
+        def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+            question = self.questions[idx]
+            answer = self.answers[idx]
+            response = self.responses[idx]
+
+            full_text = question + response
+
+            encoding = self.tokenizer(
+                full_text,
+                truncation=True,
+                max_length=self.seq_length,
+                padding="max_length",
+                return_tensors="pt",
+            )
+
+            input_ids = encoding["input_ids"].squeeze(0)
+            labels = input_ids.clone()
+            # Mask out the prompt tokens in the labels
+            prompt_length = len(self.tokenizer(prompt)["input_ids"])
+            labels[:prompt_length] = -100  # Ignore index for loss computation
+
+            return {
+                "input_ids": input_ids,
+                "labels": labels,
+            }
+
+    return PackedSFTDataset(
+        tokenizer=tokenizer,
+        dataset_path=dataset_path,
+        seq_length=seq_length,
+        shuffle=shuffle,
+    )
 
 
 def run_iterate_batches(
@@ -361,7 +426,10 @@ def run_iterate_batches(
     Returns:
         Iterable over batches, where each batch has size `batch_size`.
     """
-    raise NotImplementedError
+    # raise NotImplementedError
+    from torch.utils.data import DataLoader
+
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
 
 
 def run_parse_mmlu_response(
@@ -387,7 +455,11 @@ def run_parse_mmlu_response(
         str (one of "A", "B", "C", or "D") if the model output can be parsed into a prediction,
         else None.
     """
-    raise NotImplementedError
+    # raise NotImplementedError
+    from cs336_alignment.dataset_utils.mmlu import parse_mmlu_model_output
+
+    pred, _ = parse_mmlu_model_output(mmlu_example, model_output)
+    return pred
 
 
 def run_parse_gsm8k_response(
@@ -404,7 +476,10 @@ def run_parse_gsm8k_response(
         str with the predicted numeric answer if the model output can be parsed into a prediction,
         else None.
     """
-    raise NotImplementedError
+    # raise NotImplementedError
+    from cs336_alignment.dataset_utils.gsm8k import parse_gsm8k_model_output
+
+    return parse_gsm8k_model_output(model_output)
 
 
 def run_compute_per_instance_dpo_loss(

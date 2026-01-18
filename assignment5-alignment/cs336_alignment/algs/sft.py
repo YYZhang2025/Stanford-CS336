@@ -4,13 +4,14 @@ import random
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import wandb
+from torch.utils.data import DataLoader, Dataset
 from tqdm import trange
 from transformers import AutoTokenizer, PreTrainedModel
 from vllm import SamplingParams
 
 from cs336_alignment.config import TrainConfig
-from cs336_alignment.dataset import ReasoningDataset, collate_fn
 from cs336_alignment.eval import evaluate_responses
 from cs336_alignment.lr import get_lr, update_learning_rate
 from cs336_alignment.utils import (
@@ -26,7 +27,7 @@ from cs336_alignment.vllm_utils import generate_responses, load_policy_into_vllm
 
 
 def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
-    log_probs = nn.functional.log_softmax(logits, dim=-1)
+    log_probs = F.log_softmax(logits, dim=-1)
     probs = torch.exp(log_probs)
     entropy = -torch.sum(probs * log_probs, dim=-1)
     return entropy
@@ -35,10 +36,9 @@ def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
 def get_response_log_probs(
     model, input_ids: torch.Tensor, labels: torch.Tensor, return_token_entropy: bool = False
 ) -> dict[str, torch.Tensor]:
-    out = model(input_ids=input_ids)
-    logits = out.logits
+    logits = model(input_ids=input_ids).logits
 
-    logp = nn.functional.log_softmax(logits, dim=-1)
+    logp = F.log_softmax(logits, dim=-1)
     log_probs = logp.gather(-1, labels.unsqueeze(-1)).squeeze(-1)
 
     res = {
@@ -89,6 +89,121 @@ def sft_microbatch_train_step(
     return loss_scaled.detach(), metadata
 
 
+def tokenize_prompt_and_output(
+    prompt_strs: list[str],
+    output_strs: list[str],
+    tokenizer,
+) -> dict:
+    prompt_tokens = tokenizer(
+        prompt_strs,
+        add_special_tokens=False,
+        padding=False,
+        truncation=False,
+        return_attention_mask=False,
+    )
+
+    output_tokens = tokenizer(
+        output_strs,
+        add_special_tokens=False,
+        padding=False,
+        truncation=False,
+        return_attention_mask=False,
+    )
+
+    input_ids = []
+    response_mask = []
+
+    for p_ids, o_ids in zip(prompt_tokens["input_ids"], output_tokens["input_ids"]):
+        combined_ids = p_ids + o_ids
+        input_ids.append(combined_ids)
+
+        mask = ([False] * len(p_ids)) + ([True] * len(o_ids))
+        response_mask.append(mask)
+
+    MAX_LEN = max(len(ids) for ids in input_ids)
+    # 151643 for Qwen/Qwen2.5-Math-1.5B
+    pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+
+    def pad_to(x, value):
+        return x + [value] * (MAX_LEN - len(x))
+
+    full = torch.tensor([pad_to(x, pad_id) for x in input_ids], dtype=torch.long)
+    input_ids = full[:, :-1].contiguous()
+    labels = full[:, 1:].contiguous()
+    response_mask = torch.tensor([pad_to(x, False) for x in response_mask], dtype=torch.bool)[
+        :, 1:
+    ].contiguous()
+
+    assert input_ids.shape == labels.shape == response_mask.shape, (
+        "Shapes of input_ids, labels, and response_mask must match"
+    )
+    return {
+        "input_ids": input_ids,
+        "labels": labels,
+        "response_mask": response_mask,
+    }
+
+
+class SFTDataset(Dataset):
+    def __init__(self, questions: list[str], cots: list[str], answers: list[str], prompt_template_path: str):
+        self.questions = questions
+        self.cots = cots
+        self.answers = answers
+
+        with open(prompt_template_path, "r", encoding="utf-8") as f:
+            self.prompt_template = f.read()
+
+        self.prompts = [self.prompt_template.format(question=q) for q in self.questions]
+
+    def __len__(self):
+        return len(self.questions)
+
+    def __getitem__(self, idx):
+        prompt = self.prompts[idx]
+        cot = self.cots[idx]
+        answer = self.answers[idx]
+
+        return prompt, cot, answer
+
+    @classmethod
+    def load_from_disk(cls, path: str, prompt_template_path: str):
+        rows = []
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                rows.append(json.loads(line))
+        questions = []
+        cots = []
+        answers = []
+        for row in rows:
+            questions.append(row["question"])
+            cots.append(row["cot"])
+            answers.append(row["answer"])
+
+        return cls(questions, cots, answers, prompt_template_path=prompt_template_path)
+
+
+def sft_collate_fn(batch, tokenizer):
+    """
+    return:
+        {
+            "input_ids": input_ids,
+            "labels": labels,
+            "response_mask": response_mask,
+        }
+    """
+    prompts, cots, answers = zip(*batch)
+    tokenized = tokenize_prompt_and_output(
+        prompt_strs=list(prompts),
+        output_strs=list(cots),
+        tokenizer=tokenizer,
+    )
+
+    # tokenized["prompts"] = list(prompts)
+    # tokenized["answers"] = list(answers)
+
+    return tokenized
+
+
 class SFTTrainer:
     def __init__(
         self,
@@ -117,19 +232,19 @@ class SFTTrainer:
         )
 
         dataset_dir = os.path.join(dataset_dir_base, train_config.dataset_name)
-        train_dataset = ReasoningDataset.load_from_disk(
+        train_dataset = SFTDataset.load_from_disk(
             os.path.join(dataset_dir, "train.jsonl"), train_config.prompt_template_path
         )
-        self.test_dataset = ReasoningDataset.load_from_disk(
+        self.test_dataset = SFTDataset.load_from_disk(
             os.path.join(dataset_dir, "test.jsonl"), train_config.prompt_template_path
         )
 
         self.train_dataloader = cycle_dataloader(
-            torch.utils.data.DataLoader(
+            DataLoader(
                 train_dataset,
                 batch_size=self.train_config.batch_size,
                 shuffle=True,
-                collate_fn=lambda batch: collate_fn(batch, self.tokenizer),
+                collate_fn=lambda batch: sft_collate_fn(batch, self.tokenizer),
                 drop_last=False,
             )
         )

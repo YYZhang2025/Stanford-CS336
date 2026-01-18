@@ -20,6 +20,20 @@ def extract_gsm8k_answer(answer: str) -> str:
     return "[invalid]"
 
 
+def parse_gsm8k_model_output(response: str) -> str | None:
+    """
+    Extract the final answer from a GSM8K-style response.
+    Looks for the pattern "#### <answer>" at the end of the response.
+    """
+    from cs336_alignment.dataset_utils.math import extract_answer
+
+    model_answer = response.split("<answer>")[-1].replace("</answer>", "")
+    if "\\boxed" in model_answer:
+        model_answer = extract_answer(model_answer)
+
+    return model_answer.strip() if model_answer else None
+
+
 def collect_rows(data_dir: str, filename: str = "train.jsonl") -> List[Dict[str, Any]]:
     p = Path(data_dir) / filename
     if not p.exists():

@@ -39,16 +39,13 @@ def process_gsm8k(data_path: str):
 
 
 def process_mmlu(data_path: str):
-    from cs336_alignment.dataset_utils.mmlu import collect_rows, process_row
+    from cs336_alignment.dataset_utils.mmlu import collect_rows
 
     # Use dev as train, test as test (common setup)
     train_rows = collect_rows(os.path.join(data_path, "dev"))
     test_rows = collect_rows(os.path.join(data_path, "test"))
 
-    # MMLU has no CoT; keep schema consistent with empty cot
-    train = [{"question": p, "answer": a} for p, a in (process_row(r) for r in train_rows)]
-    test = [{"question": p, "answer": a} for p, a in (process_row(r) for r in test_rows)]
-    return train, test
+    return train_rows, test_rows
 
 
 PROCESSORS = {
