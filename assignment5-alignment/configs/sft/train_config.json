@@ -1,29 +1,29 @@
 {
-  "model_name": "models/Qwen2.5-Math-1.5B",
+  "model_name": "./models/Qwen/Qwen2.5-Math-1.5B",
   "prompt_template_path": "./cs336_alignment/prompts/r1_zero.prompt",
   "dataset_base_path": "./data/pre-processed",
   "dataset_name": "math",
-  "dataset_path": "./data/math/processed",
   "wandb_logging": true,
   "project_name": "assignment05-alignment",
-  "run_name": "Qwen2.5-Math-1.5B_dataset(math)",
-  "batch_size": 4,
   "total_training_steps": 1000,
+  "batch_size": 4,
   "gradient_accumulation_steps": 64,
-  "betas": [
-    0.9,
-    0.98
-  ],
-  "weight_decay": 1e-05,
+  "betas": [0.9, 0.98],
+  "weight_decay": 1e-5,
   "max_lr": 1e-5,
-  "min_lr": 1e-06,
-  "warmup_steps": 20,
+  "min_lr": 1e-6,
+  "warmup_steps": 100,
   "max_grad_norm": 1.0,
   "mixed_precision_training": true,
+  "save_interval": 100,
   "checkpoint_dir": "./checkpoints",
-  "save_interval": 20,
-  "eval_batch_size": 4,
-  "eval_steps": 100,
-  "sample_interval": 20, 
-  "seed": 42
+  "eval_steps": 50,
+  "seed": 42,
+  "sample_interval": 20,
+  "sampling_temperature": 1.0,
+  "sampling_max_tokens": 1024,
+  "sampling_top_p": 1.0,
+  "sampling_stop_tokens": [
+    "</answer>"
+  ]
 }

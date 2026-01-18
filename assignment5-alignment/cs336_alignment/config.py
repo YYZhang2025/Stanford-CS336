@@ -10,7 +10,7 @@ class TrainConfig:
     model_name: str = "./models/Qwen/Qwen2.5-Math-1.5B"
     prompt_template_path: str = "./cs336_alignment/prompts/r1_zero.prompt"
 
-    # Choices: "math", "gsm8k",  "mmlu"
+    # Dataset Choices: "math", "gsm8k",  "mmlu"
     dataset_base_path: str = "./data/pre-processed"
     dataset_name: str = "math"
     dataset_path: str = ""  # will be set in __post_init__
@@ -18,27 +18,37 @@ class TrainConfig:
     # WanDB logging
     wandb_logging: bool = True
     project_name: str = "assignment05-alignment"
-    run_name: str = ""
+    run_name: str = ""  # will be set in __post_init__
 
     # Training hyperparameters
-    batch_size: int = 8
-    total_training_steps: int = 2000
-    gradient_accumulation_steps: int = 10
+    total_training_steps: int = 1000  # total number of training steps
+    batch_size: int = 4  # the batch size of mini-batch
+    # total effective batch size = batch_size * gradient_accumulation_steps
+    gradient_accumulation_steps: int = 64
+
+    # Optimizer hyperparameters
     betas: tuple = field(default=(0.9, 0.98))
     weight_decay: float = 1e-5
     max_lr: float = 1e-5
     min_lr: float = 1e-6
-    warmup_steps: int = 500
+    warmup_steps: int = 100
     max_grad_norm: float = 1.0
 
+    # Other training options
     mixed_precision_training: bool = True
 
+    save_interval: int = 100
     checkpoint_dir: str = "./checkpoints"
-    save_interval: int = 2
-    eval_batch_size: int = 4
-    eval_steps: int = 5
+
+    # Evaluation and sampling
+    eval_steps: int = 50
     seed: int = 42
     sample_interval: int = 20
+    # For VLLM sampling during evaluation and response sampling
+    sampling_temperature: float = 1.0
+    sampling_max_tokens: int = 1024
+    sampling_top_p: float = 1.0
+    sampling_stop_tokens: list[str] = field(default_factory=lambda: ["</answer>"])
 
     def __post_init__(self):
         self.run_name = f"{self.model_name.split('/')[-1]}_dataset({self.dataset_name})"

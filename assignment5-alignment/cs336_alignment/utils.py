@@ -52,7 +52,7 @@ def get_ctx(use_mixed: bool, device: torch.device, verbose: bool = True):
 def get_device(verbose: bool = True, rank: int = 0, use_mps: bool = True) -> torch.device:
     if torch.cuda.is_available():
         if verbose:
-            print_color("Using CUDA device", "blue")
+            print_color(f"Using CUDA device cuda:{rank}", "blue")
         return torch.device(f"cuda:{rank}")
     elif use_mps and torch.backends.mps.is_available():
         if verbose:

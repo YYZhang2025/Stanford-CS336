@@ -1,13 +1,16 @@
 import json
 import os
+import random
 
 import torch
 import torch.nn as nn
 import wandb
 from torch.utils.data import Dataset
 from transformers import AutoTokenizer, PreTrainedModel
+from vllm import SamplingParams
 
 from cs336_alignment.config import TrainConfig
+from cs336_alignment.eval import evaluate_responses
 from cs336_alignment.lr import get_lr, update_learning_rate
 from cs336_alignment.utils import (
     clear_memory,
@@ -17,8 +20,7 @@ from cs336_alignment.utils import (
     save_model_checkpoint,
     to_float,
 )
-
-# from cs336_alignment.vllm_utils import load_vllm_model
+from cs336_alignment.vllm_utils import generate_responses, load_policy_into_vllm_instance
 
 
 def tokenize_prompt_and_output(
@@ -148,12 +150,13 @@ class SFTDataset(Dataset):
         with open(prompt_template_path, "r", encoding="utf-8") as f:
             self.prompt_template = f.read()
 
+        self.prompts = [self.prompt_template.format(question=q) for q in self.questions]
+
     def __len__(self):
         return len(self.questions)
 
     def __getitem__(self, idx):
-        question = self.questions[idx]
-        prompt = self.prompt_template.format(question=question)
+        prompt = self.prompts[idx]
         cot = self.cots[idx]
         answer = self.answers[idx]
 
@@ -234,6 +237,7 @@ class SFTTrainer:
         test_dataset = SFTDataset.load_from_disk(
             os.path.join(dataset_dir, "test.jsonl"), train_config.prompt_template_path
         )
+        self.test_dataset = test_dataset
 
         self.train_dataloader = cycle_dataloader(
             torch.utils.data.DataLoader(
@@ -244,13 +248,6 @@ class SFTTrainer:
                 drop_last=False,
             )
         )
-        self.test_dataloader = torch.utils.data.DataLoader(
-            test_dataset,
-            batch_size=self.train_config.eval_batch_size,
-            shuffle=False,
-            collate_fn=lambda batch: collate_fn(batch, self.tokenizer),
-        )
-
         self.checkpoint_path = os.path.join(
             train_config.checkpoint_dir,
             f"sft_{train_config.model_name.split('/')[-1]}_{train_config.dataset_name}",
@@ -260,6 +257,14 @@ class SFTTrainer:
             os.path.join(self.checkpoint_path, "train_config.json"),
         )
         self.start_step = 0
+        self.sampling_params = SamplingParams(
+            temperature=self.train_config.sampling_temperature,
+            max_tokens=self.train_config.sampling_max_tokens,
+            top_p=self.train_config.sampling_top_p,
+            include_stop_str_in_output=True,
+            stop=self.train_config.sampling_stop_tokens,
+        )
+        self.cur_step = 0
 
     @classmethod
     def load_from_checkpoint(cls, model, checkpoint_path: str, device: torch.device) -> "SFTTrainer":
@@ -285,149 +290,54 @@ class SFTTrainer:
     @torch.no_grad()
     def evaluate(self, vllm=None):
         print_color("Evaluating SFT model on test dataset...", color="magenta")
-        self.model.eval()
 
-        total_loss = 0.0
-        total_batches = 0
+        load_policy_into_vllm_instance(self.model, vllm)
+        print_color(
+            f"Loaded SFT model weights at step {self.start_step} into VLLM instance for evaluation.",
+            color="magenta",
+        )
 
-        # Aggregate R1-style evaluation stats (only computed when vllm is provided)
-        agg = {
-            "total": 0,
-            "correct": 0,
-            "format_wrong": 0,
-            "answer_wrong": 0,
-        }
+        prompts = self.test_dataset.prompts
+        true_answers = self.test_dataset.answers
 
-        from cs336_alignment.vllm_utils import load_policy_into_vllm_instance
+        overview = evaluate_responses(
+            vllm=vllm,
+            prompts=prompts,
+            answers=true_answers,
+            sampling_params=self.sampling_params,
+        )
 
-        if vllm is not None:
-            load_policy_into_vllm_instance(self.model, vllm)
-            print_color("Loaded SFT model weights into VLLM instance for evaluation.", color="magenta")
+        overview["accuracy"] = overview["correct"] / overview["total"]
 
-        # Import once (avoid re-importing inside the loop)
-        from cs336_alignment.eval import evaluate_responses
-
-        with torch.no_grad():
-            for batch in self.test_dataloader:
-                # 1) Token-level NLL on the supervised response tokens (teacher forcing)
-                input_ids = batch["input_ids"].to(self.device, non_blocking=True)
-                labels = batch["labels"].to(self.device, non_blocking=True)
-                response_mask = batch["response_mask"].to(self.device, non_blocking=True)
-
-                with self.ctx:
-                    policy_outputs = get_response_log_probs(
-                        self.model,
-                        input_ids=input_ids,
-                        labels=labels,
-                        return_token_entropy=False,
-                    )
-                    policy_log_probs = policy_outputs["log_probs"]
-
-                    # Average negative log-likelihood over *response* tokens only
-                    masked_log_probs = torch.where(
-                        response_mask,
-                        policy_log_probs,
-                        torch.zeros_like(policy_log_probs),
-                    )
-                    denom = response_mask.sum().clamp(min=1)
-                    loss = -(masked_log_probs.sum() / denom)
-
-                total_loss += to_float(loss)
-                total_batches += 1
-
-                # 2) Generation-based correctness stats (R1-style), only if vllm is provided
-                if vllm is not None:
-                    prompts = batch["prompts"]
-                    true_answers = batch["answers"]
-                    overview = evaluate_responses(
-                        vllm=vllm,
-                        prompts=prompts,
-                        answers=true_answers,
-                        sampling_params={
-                            "max_new_tokens": 256,
-                            "temperature": 0.7,
-                            "top_p": 0.9,
-                        },
-                    )
-                    for k in agg:
-                        agg[k] += int(overview.get(k, 0))
-
-                del input_ids, labels, response_mask
-
-        if vllm is not None and agg["total"] > 0:
-            acc = agg["correct"] / agg["total"]
-            print_color(
-                "Evaluation stats: "
-                f"total={agg['total']}, "
-                f"correct={agg['correct']} ({acc:.2%}), "
-                f"format_wrong={agg['format_wrong']}, "
-                f"answer_wrong={agg['answer_wrong']}",
-                color="magenta",
-            )
-
-        agg["accuracy"] = agg["correct"] / agg["total"] if agg["total"] > 0 else 0.0
-
-        self.model.train()
-        return agg
+        print_color(
+            f"SFT Evaluation Results - Total: {overview['total']}, Correct: {overview['correct']}, "
+            f"Format Wrong: {overview['format_wrong']}, Answer Wrong: {overview['answer_wrong']}, "
+            f"Accuracy: {overview['accuracy']:.4f}",
+            color="magenta",
+        )
+        return overview
 
     @torch.no_grad()
     def sample_responses(
         self,
-        max_new_tokens: int = 256,
-        temperature: float = 0.7,
-        top_p: float = 0.9,
         vllm=None,
+        num_samples: int = 5,
     ) -> list[str]:
-        print_color("Sampling responses from SFT model...", color="cyan")
-        # print(self.sample_dataset)
-        prompts, cots, true_answers = zip(*self.sample_dataset)
-        prompts = list(prompts)
-        cots = list(cots)
-        true_answers = list(true_answers)
+        print_color(f"Sampling {num_samples} responses from SFT model...", color="cyan")
+        index = random.sample(range(len(self.test_dataset)), k=num_samples)
+        prompts = [self.test_dataset.prompts[i] for i in index]
+        true_answers = [self.test_dataset.answers[i] for i in index]
 
-        if vllm is not None:
-            from cs336_alignment.vllm_utils import generate_responses
-
-            responses = generate_responses(
-                vllm,
-                prompts,
-                sampling_params={
-                    "max_new_tokens": max_new_tokens,
-                    "temperature": temperature,
-                    "top_p": top_p,
-                },
-            )
-        else:
-            self.model.eval()
-            input_tokens = self.tokenizer(
-                prompts,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                add_special_tokens=False,
-                return_attention_mask=True,
-            ).to(self.device)
-
-            generated_ids = self.model.generate(
-                input_ids=input_tokens["input_ids"],
-                max_new_tokens=max_new_tokens,
-                do_sample=True,
-                temperature=temperature,
-                top_p=top_p,
-                attention_mask=input_tokens["attention_mask"],
-                pad_token_id=self.tokenizer.eos_token_id,
-                use_cache=True,
-            )
-
-            responses = []
-            for i, gen_ids in enumerate(generated_ids):
-                gen_text = self.tokenizer.decode(
-                    gen_ids[input_tokens["input_ids"].shape[1] :],
-                    skip_special_tokens=True,
-                )
-                responses.append(gen_text.strip())
-
-            self.model.train()
+        load_policy_into_vllm_instance(self.model, vllm)
+        print_color(
+            f"Loaded SFT model weights at step {self.cur_step} into VLLM instance for sampling.",
+            color="cyan",
+        )
+        responses = generate_responses(
+            vllm,
+            prompts,
+            self.sampling_params,
+        )
 
         print_color("Sampled Responses:", color="cyan")
         for i, (prompt, response, true_answer) in enumerate(zip(prompts, responses, true_answers)):
@@ -442,13 +352,14 @@ class SFTTrainer:
         self,
     ) -> float:
         batch_loss = 0.0
+
         for micro_step in range(self.train_config.gradient_accumulation_steps):
             print_color(
                 f"    Microbatch step {micro_step + 1}/{self.train_config.gradient_accumulation_steps}",
                 color="blue",
             )
-            batch = next(self.train_dataloader)
 
+            batch = next(self.train_dataloader)
             input_ids = batch["input_ids"].to(self.device, non_blocking=True)
             labels = batch["labels"].to(self.device, non_blocking=True)
             response_mask = batch["response_mask"].to(self.device, non_blocking=True)
@@ -473,6 +384,11 @@ class SFTTrainer:
             batch_loss += to_float(loss_scaled)
 
         nn.utils.clip_grad_norm_(self.model.parameters(), self.train_config.max_grad_norm)
+        update_learning_rate(
+            optimizer=self.optimizer,
+            step=self.cur_step,
+            train_config=self.train_config,
+        )
         self.optimizer.step()
         self.optimizer.zero_grad(set_to_none=True)
 
@@ -493,50 +409,54 @@ class SFTTrainer:
         )
         print_color("||" + "=" * 80, color="green")
 
-        self.sample_responses(
-            vllm=vllm,
-        )
-
         for step in range(self.start_step, self.train_config.total_training_steps):
+            self.cur_step = step + 1
+
+            log_dict = {}
             self.model.train()
             print_color(
-                f"Starting training step {step + 1}/{self.train_config.total_training_steps}", color="yellow"
+                f"Starting training step {self.cur_step}/{self.train_config.total_training_steps}",
+                color="yellow",
             )
-            log_dict = {}
 
-            update_learning_rate(
-                optimizer=self.optimizer,
-                step=step,
-                train_config=self.train_config,
-            )
             loss = self.train_step()
             log_dict["train/loss"] = loss
 
             print_color(
-                f"Step {step + 1}/{self.train_config.total_training_steps}, Loss: {loss:.4f}, Lr: {get_lr(self.optimizer):.6f}\n"
+                f"Step {self.cur_step}/{self.train_config.total_training_steps}, Loss: {loss:.4f}, Lr: {get_lr(self.optimizer):.6f}\n"
             )
 
-            if (step + 1) % self.train_config.sample_interval == 0:
+            if self.cur_step % self.train_config.sample_interval == 0:
                 clear_memory()
                 self.sample_responses(
                     vllm=vllm,
                 )
 
-            if (step + 1) % self.train_config.eval_steps == 0:
+            if self.cur_step % self.train_config.eval_steps == 0:
                 clear_memory()
                 out = self.evaluate(vllm)
                 log_dict["eval/accuracy"] = out["accuracy"]
                 log_dict["eval/correct"] = out["correct"]
                 log_dict["eval/format_wrong"] = out["format_wrong"]
+                log_dict["eval/answer_wrong"] = out["answer_wrong"]
 
             if self.train_config.wandb_logging:
-                wandb.log(log_dict, step=(step + 1))
+                wandb.log(log_dict, step=self.cur_step)
 
-            # if (step + 1) % self.train_config.save_interval == 0:
-            #     checkpoint_file = os.path.join(self.checkpoint_path, f"checkpoint_step_{step + 1}.pt")
-            #     save_model_checkpoint(
-            #         model=self.model,
-            #         optimizer=self.optimizer,
-            #         cur_step=step + 1,
-            #         checkpoint_path=checkpoint_file,
-            #     )
+            if (self.cur_step) % self.train_config.save_interval == 0:
+                checkpoint_file = os.path.join(self.checkpoint_path, f"checkpoint_step_{self.cur_step}.pt")
+                save_model_checkpoint(
+                    model=self.model,
+                    optimizer=self.optimizer,
+                    cur_step=self.cur_step,
+                    checkpoint_path=checkpoint_file,
+                )
+
+        print_color("Training completed. Saving final model checkpoint...", color="green")
+        checkpoint_file = os.path.join(self.checkpoint_path, "checkpoint_final.pt")
+        save_model_checkpoint(
+            model=self.model,
+            optimizer=self.optimizer,
+            cur_step=self.train_config.total_training_steps,
+            checkpoint_path=checkpoint_file,
+        )

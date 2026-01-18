@@ -38,8 +38,5 @@ def generate_responses(vllm: LLM, prompts: list[str], sampling_params):
         sampling_params=sampling_params,
     )
 
-    responses = [
-        output.generations[0].text[len(prompt) :]  # noqa: E203
-        for prompt, output in zip(prompts, outputs)
-    ]
+    responses = [output.outputs[0].text for output in outputs]
     return responses
