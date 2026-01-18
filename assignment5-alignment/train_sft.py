@@ -34,12 +34,12 @@ def main(
         )
 
     # init vllm
-    # vllm = init_vllm(
-    #     model_id=train_config.model_name,
-    #     device="cuda",
-    #     seed=train_config.seed,
-    #     gpu_memory_utilization=0.85,
-    # )
+    vllm = init_vllm(
+        model_id=train_config.model_name,
+        device=get_device(rank=1),
+        seed=train_config.seed,
+        gpu_memory_utilization=0.85,
+    )
 
     model = AutoModelForCausalLM.from_pretrained(
         pretrained_model_name_or_path=train_config.model_name,
@@ -48,7 +48,7 @@ def main(
         attn_implementation="flash_attention_2",
         device_map="cpu",
     )
-    device = get_device()
+    device = get_device(rank=0)
     model.to(device)
     print_color(f"Loaded model and tokenizer: {train_config.model_name}", color="cyan")
 
@@ -57,12 +57,11 @@ def main(
         train_config=train_config,
         device=device,
     )
-    sft_trainer.train(vllm=None)
-
+    sft_trainer.train(vllm=vllm)
     # Cleanup
     if train_config.wandb_logging:
         wandb.finish()
-    # vllm.shutdown()
+    vllm.shutdown()
 
 
 if __name__ == "__main__":

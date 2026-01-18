@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import wandb
 from torch.utils.data import Dataset
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, PreTrainedModel
 
 from cs336_alignment.config import TrainConfig
 from cs336_alignment.lr import get_lr, update_learning_rate
@@ -133,20 +133,8 @@ def sft_microbatch_train_step(
     loss_scaled = loss_unscaled / gradient_accumulation_steps
     loss_scaled.backward()
 
-    # For logging purposes
-    # per_token_loss = -policy_log_probs
-    # with torch.no_grad():
-    #     m = response_mask.to(dtype=policy_log_probs.dtype)
-    #     denom = m.sum().clamp_min(1.0)
-    #     mean_logp = (policy_log_probs * m).sum() / denom
-    #     mean_ce = (per_token_loss * m).sum() / denom
-
     metadata = {
         "loss_unscaled": loss_unscaled.detach(),
-        # "mean_ce": mean_ce.detach(),
-        # "mean_logp": mean_logp.detach(),
-        # "response_tokens": denom.detach(),
-        # "grad_accum_steps": torch.tensor(float(gradient_accumulation_steps), device=policy_log_probs.device),
     }
     return loss_scaled.detach(), metadata
 
@@ -204,6 +192,7 @@ def collate_fn(batch, tokenizer):
         tokenizer=tokenizer,
     )
 
+    tokenized["prompts"] = list(prompts)
     tokenized["answers"] = list(answers)
     return tokenized
 
@@ -211,7 +200,7 @@ def collate_fn(batch, tokenizer):
 class SFTTrainer:
     def __init__(
         self,
-        model: nn.Module,
+        model: PreTrainedModel,
         train_config: TrainConfig,
         device: torch.device,
         dataset_dir_base: str = "./data/pre-processed",
@@ -297,11 +286,30 @@ class SFTTrainer:
     def evaluate(self, vllm=None):
         print_color("Evaluating SFT model on test dataset...", color="magenta")
         self.model.eval()
+
         total_loss = 0.0
         total_batches = 0
 
+        # Aggregate R1-style evaluation stats (only computed when vllm is provided)
+        agg = {
+            "total": 0,
+            "correct": 0,
+            "format_wrong": 0,
+            "answer_wrong": 0,
+        }
+
+        from cs336_alignment.vllm_utils import load_policy_into_vllm_instance
+
+        if vllm is not None:
+            load_policy_into_vllm_instance(self.model, vllm)
+            print_color("Loaded SFT model weights into VLLM instance for evaluation.", color="magenta")
+
+        # Import once (avoid re-importing inside the loop)
+        from cs336_alignment.eval import evaluate_responses
+
         with torch.no_grad():
             for batch in self.test_dataloader:
+                # 1) Token-level NLL on the supervised response tokens (teacher forcing)
                 input_ids = batch["input_ids"].to(self.device, non_blocking=True)
                 labels = batch["labels"].to(self.device, non_blocking=True)
                 response_mask = batch["response_mask"].to(self.device, non_blocking=True)
@@ -315,20 +323,52 @@ class SFTTrainer:
                     )
                     policy_log_probs = policy_outputs["log_probs"]
 
-                    loss_scaled, metadata = sft_microbatch_train_step(
-                        policy_log_probs=policy_log_probs,
-                        response_mask=response_mask,
-                        gradient_accumulation_steps=1,
-                        normalize_constant=1,
+                    # Average negative log-likelihood over *response* tokens only
+                    masked_log_probs = torch.where(
+                        response_mask,
+                        policy_log_probs,
+                        torch.zeros_like(policy_log_probs),
                     )
+                    denom = response_mask.sum().clamp(min=1)
+                    loss = -(masked_log_probs.sum() / denom)
 
-                total_loss += to_float(loss_scaled)
+                total_loss += to_float(loss)
                 total_batches += 1
 
-        avg_loss = total_loss / total_batches
-        print_color(f"Evaluation completed. Average Loss: {avg_loss:.4f}\n", color="magenta")
+                # 2) Generation-based correctness stats (R1-style), only if vllm is provided
+                if vllm is not None:
+                    prompts = batch["prompts"]
+                    true_answers = batch["answers"]
+                    overview = evaluate_responses(
+                        vllm=vllm,
+                        prompts=prompts,
+                        answers=true_answers,
+                        sampling_params={
+                            "max_new_tokens": 256,
+                            "temperature": 0.7,
+                            "top_p": 0.9,
+                        },
+                    )
+                    for k in agg:
+                        agg[k] += int(overview.get(k, 0))
+
+                del input_ids, labels, response_mask
+
+        if vllm is not None and agg["total"] > 0:
+            acc = agg["correct"] / agg["total"]
+            print_color(
+                "Evaluation stats: "
+                f"total={agg['total']}, "
+                f"correct={agg['correct']} ({acc:.2%}), "
+                f"format_wrong={agg['format_wrong']}, "
+                f"answer_wrong={agg['answer_wrong']}",
+                color="magenta",
+            )
+
+        agg["accuracy"] = agg["correct"] / agg["total"] if agg["total"] > 0 else 0.0
+
         self.model.train()
-        return avg_loss
+        return agg
 
     @torch.no_grad()
     def sample_responses(
@@ -346,8 +386,17 @@ class SFTTrainer:
         true_answers = list(true_answers)
 
         if vllm is not None:
-            pass
-            # load
+            from cs336_alignment.vllm_utils import generate_responses
+
+            responses = generate_responses(
+                vllm,
+                prompts,
+                sampling_params={
+                    "max_new_tokens": max_new_tokens,
+                    "temperature": temperature,
+                    "top_p": top_p,
+                },
+            )
         else:
             self.model.eval()
             input_tokens = self.tokenizer(
@@ -358,29 +407,17 @@ class SFTTrainer:
                 add_special_tokens=False,
                 return_attention_mask=True,
             ).to(self.device)
-            # Quick sanity check to fail fast if the model has NaNs/Infs
-            with torch.no_grad():
-                out = self.model(
-                    input_ids=input_tokens["input_ids"], attention_mask=input_tokens["attention_mask"]
-                )
-                if not torch.isfinite(out.logits).all():
-                    bad = (~torch.isfinite(out.logits)).sum().item()
-                    raise RuntimeError(
-                        f"Model produced non-finite logits during sampling (count={bad}). "
-                        "This usually indicates NaNs/Infs in weights or unstable training."
-                    )
 
-            with torch.no_grad():
-                generated_ids = self.model.generate(
-                    input_ids=input_tokens["input_ids"],
-                    max_new_tokens=max_new_tokens,
-                    do_sample=True,
-                    temperature=temperature,
-                    top_p=top_p,
-                    attention_mask=input_tokens["attention_mask"],
-                    pad_token_id=self.tokenizer.eos_token_id,
-                    use_cache=True,
-                )
+            generated_ids = self.model.generate(
+                input_ids=input_tokens["input_ids"],
+                max_new_tokens=max_new_tokens,
+                do_sample=True,
+                temperature=temperature,
+                top_p=top_p,
+                attention_mask=input_tokens["attention_mask"],
+                pad_token_id=self.tokenizer.eos_token_id,
+                use_cache=True,
+            )
 
             responses = []
             for i, gen_ids in enumerate(generated_ids):
@@ -391,6 +428,7 @@ class SFTTrainer:
                 responses.append(gen_text.strip())
 
             self.model.train()
+
         print_color("Sampled Responses:", color="cyan")
         for i, (prompt, response, true_answer) in enumerate(zip(prompts, responses, true_answers)):
             print_color(f"=== Example {i + 1} ===", color="cyan")
@@ -438,7 +476,7 @@ class SFTTrainer:
         self.optimizer.step()
         self.optimizer.zero_grad(set_to_none=True)
 
-        return batch_loss / self.train_config.gradient_accumulation_steps
+        return batch_loss
 
     def train(self, vllm=None):
         print_color("||" + "=" * 80, color="green")
@@ -479,16 +517,18 @@ class SFTTrainer:
             )
 
             if (step + 1) % self.train_config.sample_interval == 0:
-                # clear_memory()
+                clear_memory()
                 self.sample_responses(
                     vllm=vllm,
                 )
 
-            # if (step + 1) % self.train_config.eval_steps == 0:
-            #     clear_memory()
-            #     self.evaluate(vllm)
+            if (step + 1) % self.train_config.eval_steps == 0:
+                clear_memory()
+                out = self.evaluate(vllm)
+                log_dict["eval/accuracy"] = out["accuracy"]
+                log_dict["eval/correct"] = out["correct"]
+                log_dict["eval/format_wrong"] = out["format_wrong"]
 
-            # wandb.log(log_dict, step=(step + 1))
             if self.train_config.wandb_logging:
                 wandb.log(log_dict, step=(step + 1))
 
