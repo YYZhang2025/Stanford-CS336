@@ -434,7 +434,6 @@ class SFTTrainer:
                 log_dict["eval/answer_accuracy"] = out["answer_accuracy"]
                 log_dict["eval/answer_correct"] = out["answer_correct"]
                 log_dict["eval/format_correct"] = out["format_correct"]
-                log_dict["eval/answer_corrected_but_format_wrong"] = out["answer_corrected_but_format_wrong"]
                 log_dict["eval/formatted_but_answer_wrong"] = out["formatted_but_answer_wrong"]
                 log_dict["eval/reward_1"] = out["reward_1"]
 
