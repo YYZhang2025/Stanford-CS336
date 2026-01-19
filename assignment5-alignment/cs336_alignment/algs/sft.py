@@ -335,7 +335,7 @@ class SFTTrainer:
 
         print_color("Sampled Responses:", color="cyan")
         for i, (prompt, response, true_answer) in enumerate(zip(prompts, responses, true_answers)):
-            print_color(f"=== Example {i + 1} ===", color="cyan")
+            print_color(f"\n=== Example {i + 1} ===", color="cyan")
             print_color("Prompt: ", color="cyan")
             print(prompt)
             print_color("Response: ", color="cyan")
