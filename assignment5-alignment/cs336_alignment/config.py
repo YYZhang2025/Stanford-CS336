@@ -32,6 +32,8 @@ class TrainConfig:
     max_lr: float = 5e-6
     max_grad_norm: float = 1.0
 
+    max_context_length: int = 2048
+
     # Other training options
     mixed_precision_training: bool = True
 
