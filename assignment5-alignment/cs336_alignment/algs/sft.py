@@ -59,36 +59,6 @@ def masked_normalize(
     return torch.sum(masked_tensor, dim=dim) / normalize_constant
 
 
-def sft_microbatch_train_step(
-    policy_log_probs: torch.Tensor,
-    response_mask: torch.Tensor,
-    gradient_accumulation_steps: int,
-    normalize_constant: float = 1.0,
-) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """
-    policy_log_probs: (batch_size, seq_len) - log probabilities from the policy model
-    response_mask: (batch_size, seq_len) - boolean mask indicating response tokens 1 for normalization
-    gradient_accumulation_steps: number of microbatches to accumulate gradients over
-    normalize_constant: constant to normalize the loss
-    """
-
-    loss_unscaled = masked_normalize(
-        policy_log_probs,
-        response_mask,
-        normalize_constant=normalize_constant,
-        dim=-1,
-    )
-
-    loss_unscaled = -loss_unscaled.mean()
-    loss_scaled = loss_unscaled / gradient_accumulation_steps
-    loss_scaled.backward()
-
-    metadata = {
-        "loss_unscaled": loss_unscaled.detach(),
-    }
-    return loss_scaled.detach(), metadata
-
-
 def tokenize_prompt_and_output(
     prompt_strs: list[str],
     output_strs: list[str],
@@ -142,6 +112,36 @@ def tokenize_prompt_and_output(
         "labels": labels,
         "response_mask": response_mask,
     }
+
+
+def sft_microbatch_train_step(
+    policy_log_probs: torch.Tensor,
+    response_mask: torch.Tensor,
+    gradient_accumulation_steps: int,
+    normalize_constant: float = 1.0,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """
+    policy_log_probs: (batch_size, seq_len) - log probabilities from the policy model
+    response_mask: (batch_size, seq_len) - boolean mask indicating response tokens 1 for normalization
+    gradient_accumulation_steps: number of microbatches to accumulate gradients over
+    normalize_constant: constant to normalize the loss
+    """
+
+    loss_unscaled = masked_normalize(
+        policy_log_probs,
+        response_mask,
+        normalize_constant=normalize_constant,
+        dim=-1,
+    )
+
+    loss_unscaled = -loss_unscaled.mean()
+    loss_scaled = loss_unscaled / gradient_accumulation_steps
+    loss_scaled.backward()
+
+    metadata = {
+        "loss_unscaled": loss_unscaled.detach(),
+    }
+    return loss_scaled.detach(), metadata
 
 
 class SFTDataset(Dataset):
@@ -336,9 +336,12 @@ class SFTTrainer:
         print_color("Sampled Responses:", color="cyan")
         for i, (prompt, response, true_answer) in enumerate(zip(prompts, responses, true_answers)):
             print_color(f"=== Example {i + 1} ===", color="cyan")
-            print_color(f"[green]Prompt[green]: {prompt}", color="cyan")
-            print_color(f"[green]Response[green]: {response}", color="cyan")
-            print_color(f"[green]True Answer[green]: {true_answer}\n", color="cyan")
+            print_color("Prompt: ", color="cyan")
+            print(prompt)
+            print_color("Response: ", color="cyan")
+            print(response)
+            print_color("True Answer: ", color="cyan")
+            print(true_answer)
 
         return responses
 
@@ -426,6 +429,15 @@ class SFTTrainer:
                     vllm=vllm,
                 )
 
+            if (self.cur_step) % self.train_config.save_interval == 0:
+                checkpoint_file = os.path.join(self.checkpoint_path, f"checkpoint_step_{self.cur_step}.pt")
+                save_model_checkpoint(
+                    model=self.model,
+                    optimizer=self.optimizer,
+                    cur_step=self.cur_step,
+                    checkpoint_path=checkpoint_file,
+                )
+
             if self.cur_step % self.train_config.eval_steps == 0:
                 clear_memory()
 
@@ -439,15 +451,6 @@ class SFTTrainer:
 
             if self.train_config.wandb_logging:
                 wandb.log(log_dict, step=self.cur_step)
-
-            if (self.cur_step) % self.train_config.save_interval == 0:
-                checkpoint_file = os.path.join(self.checkpoint_path, f"checkpoint_step_{self.cur_step}.pt")
-                save_model_checkpoint(
-                    model=self.model,
-                    optimizer=self.optimizer,
-                    cur_step=self.cur_step,
-                    checkpoint_path=checkpoint_file,
-                )
 
         print_color("Training completed. Saving final model checkpoint...", color="green")
         checkpoint_file = os.path.join(self.checkpoint_path, "checkpoint_final.pt")
