@@ -223,7 +223,7 @@ class SFTTrainer:
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
             betas=train_config.betas,
-            lr=self.train_config.min_lr,
+            lr=self.train_config.max_lr,
             weight_decay=self.train_config.weight_decay,
         )
         self.ctx = get_ctx(
