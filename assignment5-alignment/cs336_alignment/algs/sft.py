@@ -20,7 +20,6 @@ from cs336_alignment.utils import (
     get_ctx,
     print_color,
     print_rich_dict,
-    save_model_checkpoint,
     to_float,
 )
 from cs336_alignment.vllm_utils import generate_responses, load_policy_into_vllm_instance
@@ -388,6 +387,7 @@ class SFTTrainer:
         self.optimizer.step()
         self.optimizer.zero_grad(set_to_none=True)
 
+        clear_memory()
         return batch_loss
 
     def train(self, vllm=None):
@@ -429,15 +429,6 @@ class SFTTrainer:
                     vllm=vllm,
                 )
 
-            if (self.cur_step) % self.train_config.save_interval == 0:
-                checkpoint_file = os.path.join(self.checkpoint_path, f"checkpoint_step_{self.cur_step}.pt")
-                save_model_checkpoint(
-                    model=self.model,
-                    optimizer=self.optimizer,
-                    cur_step=self.cur_step,
-                    checkpoint_path=checkpoint_file,
-                )
-
             if self.cur_step % self.train_config.eval_steps == 0:
                 clear_memory()
 
@@ -452,11 +443,8 @@ class SFTTrainer:
             if self.train_config.wandb_logging:
                 wandb.log(log_dict, step=self.cur_step)
 
-        print_color("Training completed. Saving final model checkpoint...", color="green")
-        checkpoint_file = os.path.join(self.checkpoint_path, "checkpoint_final.pt")
-        save_model_checkpoint(
-            model=self.model,
-            optimizer=self.optimizer,
-            cur_step=self.train_config.total_training_steps,
-            checkpoint_path=checkpoint_file,
+        clear_memory()
+        self.sample_responses(
+            vllm=vllm,
+            num_samples=10,
         )
