@@ -24,7 +24,7 @@ def main(
     seed_everything(train_config.seed)
 
     # init vllm
-    vllm_device = get_device(rank=1)
+    vllm_device = get_device(rank=1, verbose=False)
     vllm = init_vllm(
         model_id=train_config.model_name,
         device=str(vllm_device),
@@ -33,10 +33,9 @@ def main(
     )
     print_color(f"Initialized VLLM on {str(vllm_device)}", color="cyan")
 
-    model_device = get_device(rank=0)
+    model_device = get_device(rank=0, verbose=False)
     model = AutoModelForCausalLM.from_pretrained(
         pretrained_model_name_or_path=train_config.model_name,
-        # torch_dtype=torch.float16,
         dtype=torch.bfloat16,
         attn_implementation="flash_attention_2",
         device_map="cpu",

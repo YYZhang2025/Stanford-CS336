@@ -21,7 +21,7 @@ class TrainConfig:
     run_name: str = ""  # will be set in __post_init__
 
     # Training hyperparameters
-    total_training_steps: int = 1000  # total number of training steps
+    total_training_steps: int = 500  # total number of training steps
     batch_size: int = 4  # the batch size of mini-batch
     # total effective batch size = batch_size * gradient_accumulation_steps
     gradient_accumulation_steps: int = 64
@@ -29,9 +29,7 @@ class TrainConfig:
     # Optimizer hyperparameters
     betas: tuple = field(default=(0.9, 0.98))
     weight_decay: float = 1e-5
-    max_lr: float = 1e-5
-    min_lr: float = 1e-6
-    warmup_steps: int = 100
+    max_lr: float = 5e-6
     max_grad_norm: float = 1.0
 
     # Other training options

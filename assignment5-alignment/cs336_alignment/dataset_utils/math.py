@@ -75,6 +75,7 @@ def collect_rows(data_dir: str, filename: str = "train.json") -> List[Dict[str, 
 
     rows: List[Dict[str, Any]] = []
     df = pd.read_parquet(p)
+    print(df.iloc[0][0])
     for _, row in df.iterrows():
         rows.append(row.to_dict())
     return rows

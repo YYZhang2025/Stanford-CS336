@@ -1,6 +1,5 @@
+import json
 import os
-
-import pandas as pd
 
 DATA_PATH = {
     "math": "./data/math/data",
@@ -13,7 +12,9 @@ SAVED_DIR = "./data/pre-processed"
 
 def save_jsonl(rows: list[dict], out_path: str) -> None:
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    pd.DataFrame(rows).to_json(out_path, orient="records", lines=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
 def process_math(data_path: str):
