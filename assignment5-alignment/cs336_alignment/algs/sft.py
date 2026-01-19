@@ -93,7 +93,6 @@ def tokenize_prompt_and_output(
     prompt_strs: list[str],
     output_strs: list[str],
     tokenizer,
-    max_context_length: int = 2048,
 ) -> dict:
     prompt_tokens = tokenizer(
         prompt_strs,
@@ -111,50 +110,29 @@ def tokenize_prompt_and_output(
         return_attention_mask=False,
     )
 
-    input_ids_list = []
-    response_mask_list = []
+    input_ids = []
+    response_mask = []
 
-    max_full_len = max_context_length + 1
     for p_ids, o_ids in zip(prompt_tokens["input_ids"], output_tokens["input_ids"]):
-        p_ids = list(p_ids)
-        o_ids = list(o_ids)
-
-        if max_full_len is not None:
-            # If prompt alone is too long: keep prompt tail, drop output
-            if len(p_ids) >= max_full_len:
-                p_ids = p_ids[-max_full_len:]
-                o_ids = []
-            else:
-                # Otherwise, truncate output tail to fit
-                remaining = max_full_len - len(p_ids)
-                if len(o_ids) > remaining:
-                    o_ids = o_ids[:remaining]
-
         combined_ids = p_ids + o_ids
-        input_ids_list.append(combined_ids)
+        input_ids.append(combined_ids)
 
-        # Mask True only on output tokens
         mask = ([False] * len(p_ids)) + ([True] * len(o_ids))
-        response_mask_list.append(mask)
+        response_mask.append(mask)
 
-    MAX_LEN = max(len(x) for x in input_ids_list)
+    MAX_LEN = max(len(ids) for ids in input_ids)
     # 151643 for Qwen/Qwen2.5-Math-1.5B
     pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
 
     def pad_to(x, value):
         return x + [value] * (MAX_LEN - len(x))
 
-    full = torch.tensor([pad_to(x, pad_id) for x in input_ids_list], dtype=torch.long)
+    full = torch.tensor([pad_to(x, pad_id) for x in input_ids], dtype=torch.long)
     input_ids = full[:, :-1].contiguous()
     labels = full[:, 1:].contiguous()
-    response_mask = torch.tensor([pad_to(x, False) for x in response_mask_list], dtype=torch.bool)[
+    response_mask = torch.tensor([pad_to(x, False) for x in response_mask], dtype=torch.bool)[
         :, 1:
     ].contiguous()
-
-    if max_context_length is not None:
-        input_ids = input_ids[:, :max_context_length].contiguous()
-        labels = labels[:, :max_context_length].contiguous()
-        response_mask = response_mask[:, :max_context_length].contiguous()
 
     assert input_ids.shape == labels.shape == response_mask.shape, (
         "Shapes of input_ids, labels, and response_mask must match"
