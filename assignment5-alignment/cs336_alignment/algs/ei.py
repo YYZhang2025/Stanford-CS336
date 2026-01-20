@@ -66,8 +66,8 @@ class EITrainConfig(BaseConfig):
     sampling_stop_tokens: list[str] = field(default_factory=lambda: ["</answer>"])
 
     def __post_init__(self):
-        super().__post_init__()
         self.total_training_steps = self.ei_steps * self.sft_steps_per_ei_step
+        self.run_name = f"ei_dataset({self.dataset_name})_reward({self.reward_fn})_prompt({self.prompt_template_path.split('/')[-1]})"
 
 
 REWARD_FN_MAP = {
@@ -315,7 +315,7 @@ class EITrainer:
         answers: list[str],
     ) -> float:
         print_color(
-            f"[ei step {self.ei_cur_step}] Performing SFT training step on {len(prompts)} examples",
+            f"ei step {self.ei_cur_step} | Performing SFT training step on {len(prompts)} examples",
             color="green",
         )
 
@@ -349,10 +349,10 @@ class EITrainer:
                 del input_ids, labels, response_mask
                 batch_loss += to_float(loss_scaled)
 
-            print_color(
-                f"[ei step {self.ei_cur_step}][sft step {self.sft_cur_step}] SFT batch loss: {batch_loss:.4f}",
-                color="green",
-            )
+                print_color(
+                    f"ei step {self.ei_cur_step} | sft step {self.sft_cur_step} | SFT batch loss: {batch_loss:.4f}",
+                    color="green",
+                )
             nn.utils.clip_grad_norm_(self.model.parameters(), self.train_config.max_grad_norm)
             update_learning_rate(
                 optimizer=self.optimizer,
@@ -380,6 +380,7 @@ class EITrainer:
             self.ei_cur_step = step + 1
 
             # 3. Sample a batch of questions from the training dataset
+
             ei_batch = get_ei_batch(
                 prompts=self.train_prompts,
                 answers=self.train_answers,
@@ -393,6 +394,10 @@ class EITrainer:
             # (already set at the end of last EI step)
 
             # 5. Sample responses from the current policy model
+            print_color(
+                f"Sampling EI batch at EI step {self.ei_cur_step} on {len(self.train_prompts)} with {self.train_config.num_responses_per_prompt} responses per prompt",
+                color="green",
+            )
             sampled_prompts, sampled_responses = sample_g_outputs_per_prompt(
                 vllm,
                 self.sampling_params,

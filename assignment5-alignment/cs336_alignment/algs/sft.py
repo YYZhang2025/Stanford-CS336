@@ -57,6 +57,9 @@ class SFTTrainingConfig(BaseConfig):
     sampling_top_p: float = 1.0
     sampling_stop_tokens: list[str] = field(default_factory=lambda: ["</answer>"])
 
+    def __post_init__(self):
+        self.run_name = f"sft_dataset({self.dataset_name})_prompt({self.prompt_template_path.split('/')[-1]})"
+
 
 def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
     log_probs = F.log_softmax(logits, dim=-1)

@@ -2,7 +2,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 T = TypeVar("T", bound="BaseConfig")
 
@@ -32,9 +32,6 @@ class BaseConfig:
     project_name: str = "assignment05-alignment"
     run_name: str = ""  # will be set in __post_init__
 
-    def __post_init__(self):
-        self.run_name = f"{self.model_name.split('/')[-1]}_dataset({self.dataset_name})"
-
     @classmethod
     def from_json(cls: type[T], path: str | Path, *, strict: bool = False) -> T:
         path = Path(path)
@@ -63,48 +60,43 @@ class BaseConfig:
 
 
 @dataclass
-class EITrainConfig(BaseConfig):
-    # EI training config
-    ei_steps: int = 5
-    ei_batch_size: int = 512
-    reward_fn: str = "r1_zero_reward_fn"
-    num_responses_per_prompt: int = 4
+class GRPOTrainConfig(BaseConfig):
+    n_grpo_steps: int = 200
+    rollout_batch_size: int = 256
+    learning_rate: float = 1e-5
+    advantage_eps: float = 1e-6
+    group_size: int = 8
 
-    # SFT hyperparameters
-    sft_steps_per_ei_step: int = 100
-    sft_batch_size: int = 2
-    sft_gradient_accumulation_steps: int = 64
+    epochs_per_rollout_batch: int = 1
+    train_batch_size: int = 256
+    gradient_accumulation_steps: int = 128
+
+    reward_fn: Literal["r1_zero_reward_fn"] = "r1_zero_reward_fn"
+    cliprange: float = 0.2
 
     # Optimizer hyperparameters
-    betas: tuple = field(default=(0.9, 0.98))
-    weight_decay: float = 1e-5
+    loss_type: Literal["no_baseline", "reinforce_with_baseline", "grpo_clip"] = "grpo_clip"
+    betas: tuple = field(default=(0.9, 0.95))
+    weight_decay: float = 0.0
     max_lr: float = 5e-6
     max_grad_norm: float = 1.0
 
-    # Other training options
-    mixed_precision_training: bool = True
-
-    save_interval: int = 100
-    checkpoint_dir: str = "./checkpoints"
-
-    # Evaluation and sampling
-    eval_steps: int = 50
-    seed: int = 42
-
-    # For VLLM sampling during evaluation and response sampling
+    # Sampling hyperparameters
     sampling_temperature: float = 1.0
     sampling_max_tokens: int = 1024
+    sampling_min_tokens: int = 4
     sampling_top_p: float = 1.0
     sampling_stop_tokens: list[str] = field(default_factory=lambda: ["</answer>"])
 
+    # Others
+    mixed_precision_training: bool = True
+    checkpoint_dir: str = "./checkpoints"
+
     def __post_init__(self):
         super().__post_init__()
-        self.total_training_steps = self.ei_steps * self.sft_steps_per_ei_step
 
 
 if __name__ == "__main__":
-    # Example usage
-    config = EITrainConfig()
-    config.to_json("ei_train_config_example.json")
-    loaded_config = EITrainConfig.from_json("ei_train_config_example.json")
-    print(loaded_config)
+    config = GRPOTrainConfig()
+    print(config)
+    config.to_json("train_config.json")

@@ -32,11 +32,32 @@ def load_policy_into_vllm_instance(policy: PreTrainedModel, llm: LLM):
     llm_model.load_weights(state_dict.items())
 
 
-def generate_responses(vllm: LLM, prompts: list[str], sampling_params):
+def generate_responses(
+    vllm: LLM, prompts: list[str], sampling_params
+) -> list[str] | tuple[list[str], list[list[int]], list[list[float]]]:
     outputs = vllm.generate(
         prompts,
         sampling_params=sampling_params,
     )
 
-    responses = [output.outputs[0].text for output in outputs]
-    return responses
+    if not sampling_params.logprobs:
+        responses = [output.outputs[0].text for output in outputs]
+        return responses
+    else:
+        assert sampling_params.logprobs == 1, "Only logprobs=1 is supported."
+        responses = []
+        gen_ids_list = []
+        logprobs = []
+        for output in outputs:
+            sample_out = output.outputs[0]
+            responses.append(sample_out.text)
+            gen_ids = sample_out.token_ids
+            vllm_logprobs = []
+            for token_step_logprob_dict in sample_out.logprob:
+                for t_id in token_step_logprob_dict:
+                    vllm_logprobs.append(token_step_logprob_dict[t_id].logprob)
+
+            gen_ids_list.append(gen_ids)
+            logprobs.append(vllm_logprobs)
+
+        return responses, gen_ids_list, logprobs
