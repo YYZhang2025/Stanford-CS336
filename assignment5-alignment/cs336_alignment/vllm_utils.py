@@ -53,7 +53,7 @@ def generate_responses(
             responses.append(sample_out.text)
             gen_ids = sample_out.token_ids
             vllm_logprobs = []
-            for token_step_logprob_dict in sample_out.logprob:
+            for token_step_logprob_dict in sample_out.logprobs:
                 for t_id in token_step_logprob_dict:
                     vllm_logprobs.append(token_step_logprob_dict[t_id].logprob)
 

@@ -93,7 +93,7 @@ def sample_g_outputs_per_prompt(vllm, sampling_params, prompts: list[str]):
         top_p=sampling_params.top_p,
         stop=sampling_params.stop,
         include_stop_str_in_output=sampling_params.include_stop_str_in_output,
-        logprobs=1, 
+        logprobs=1,
     )
 
     all_responses, gen_ids, old_log_probs = generate_responses(
@@ -280,11 +280,11 @@ def grpo_microbatch_train_step(
     response_mask: torch.Tensor,
     gradient_accumulation_steps: int,
     loss_type: Literal["no_baseline", "reinforce_with_baseline", "grpo_clip"],
-    raw_rewards: torch.Tensor,
+    raw_rewards: torch.Tensor | None = None,
     advantages: torch.Tensor | None = None,
     old_log_probs: torch.Tensor | None = None,
-    cliprange: float = 0.2,
-):
+    cliprange: float | None = 0.2,
+) -> tuple[torch.Tensor, dict]:
     """
     Compute the GRPO loss over microbatches for training.
 
@@ -318,7 +318,7 @@ def grpo_microbatch_train_step(
     masked_loss = masked_loss / gradient_accumulation_steps
     masked_loss.backward()
 
-    return masked_loss.item(), metadata
+    return masked_loss, metadata
 
 
 class GRPOTrainer:
@@ -534,7 +534,7 @@ class GRPOTrainer:
                     cliprange=self.train_config.cliprange,
                 )
 
-                batch_loss += micro_loss
+                batch_loss += micro_loss.item()
 
             print_color(
                 f"GRPO Step {self.grpo_step} | Train Step {train_step + 1}/{n_train_steps} | "
