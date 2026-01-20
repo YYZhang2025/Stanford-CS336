@@ -1,6 +1,7 @@
 import json
 import os
 import random
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
@@ -11,7 +12,7 @@ from tqdm import trange
 from transformers import AutoTokenizer, PreTrainedModel
 from vllm import SamplingParams
 
-from cs336_alignment.config import TrainConfig
+from cs336_alignment.base_config import TrainConfig
 from cs336_alignment.eval import evaluate_responses
 from cs336_alignment.lr import get_lr, update_learning_rate
 from cs336_alignment.utils import (
@@ -23,6 +24,15 @@ from cs336_alignment.utils import (
     to_float,
 )
 from cs336_alignment.vllm_utils import generate_responses, load_policy_into_vllm_instance
+
+
+@dataclass
+class SFTTrainingConfig(TrainConfig):
+    # Training hyperparameters
+    total_training_steps: int = 500  # total number of training steps
+    batch_size: int = 4  # the batch size of mini-batch
+    # total effective batch size = batch_size * gradient_accumulation_steps
+    gradient_accumulation_steps: int = 64
 
 
 def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
@@ -207,7 +217,7 @@ class SFTTrainer:
     def __init__(
         self,
         model: PreTrainedModel,
-        train_config: TrainConfig,
+        train_config: SFTTrainingConfig,
         device: torch.device,
         dataset_dir_base: str = "./data/pre-processed",
     ):
@@ -269,7 +279,7 @@ class SFTTrainer:
     @classmethod
     def load_from_checkpoint(cls, model, checkpoint_path: str, device: torch.device) -> "SFTTrainer":
         state = torch.load(os.path.join(checkpoint_path), map_location=device)
-        train_config = TrainConfig.from_json(
+        train_config = SFTTrainingConfig.from_json(
             os.path.join(os.path.dirname(checkpoint_path), "train_config.json")
         )
         model.load_state_dict(state["model_state_dict"])

@@ -20,19 +20,11 @@ class TrainConfig:
     project_name: str = "assignment05-alignment"
     run_name: str = ""  # will be set in __post_init__
 
-    # Training hyperparameters
-    total_training_steps: int = 500  # total number of training steps
-    batch_size: int = 4  # the batch size of mini-batch
-    # total effective batch size = batch_size * gradient_accumulation_steps
-    gradient_accumulation_steps: int = 64
-
     # Optimizer hyperparameters
     betas: tuple = field(default=(0.9, 0.98))
     weight_decay: float = 1e-5
     max_lr: float = 5e-6
     max_grad_norm: float = 1.0
-
-    max_context_length: int = 2048
 
     # Other training options
     mixed_precision_training: bool = True
@@ -44,6 +36,7 @@ class TrainConfig:
     eval_steps: int = 50
     seed: int = 42
     sample_interval: int = 20
+
     # For VLLM sampling during evaluation and response sampling
     sampling_temperature: float = 1.0
     sampling_max_tokens: int = 1024

@@ -2,8 +2,6 @@ import math
 
 import torch
 
-from cs336_alignment.config import TrainConfig
-
 
 def adjust_learning_rate(cur_step: int, max_lr: float, max_steps: int):
     min_lr = max_lr * 0.1
@@ -18,12 +16,13 @@ def adjust_learning_rate(cur_step: int, max_lr: float, max_steps: int):
 def update_learning_rate(
     optimizer: torch.optim.Optimizer,
     step: int,
-    train_config: TrainConfig,
+    max_lr: float,
+    total_steps: int,
 ):
     lr = adjust_learning_rate(
         cur_step=step,
-        max_lr=train_config.max_lr,
-        max_steps=train_config.total_training_steps,
+        max_lr=max_lr,
+        max_steps=total_steps,
     )
     for param_group in optimizer.param_groups:
         param_group["lr"] = lr

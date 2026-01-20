@@ -6,7 +6,7 @@ import fire
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from cs336_alignment.algs import SFTTrainer
+from cs336_alignment.algs import EITrainer
 from cs336_alignment.base_config import TrainConfig
 from cs336_alignment.utils import get_device, print_color, save_model_checkpoint, seed_everything
 from cs336_alignment.vllm_utils import init_vllm
@@ -58,21 +58,15 @@ def main(
             },
         )
 
-    sft_trainer = SFTTrainer(
+    ei_trainer = EITrainer(
         model=model,
         train_config=train_config,
         device=model_device,
     )
-    sft_trainer.train(vllm=vllm)
+    ei_trainer.train(vllm=vllm)
 
     print_color("Training completed. Saving final model checkpoint...", color="green")
-    checkpoint_file = os.path.join(sft_trainer.checkpoint_path, "checkpoint_final.pt")
-    save_model_checkpoint(
-        model=sft_trainer.model,
-        optimizer=sft_trainer.optimizer,
-        cur_step=sft_trainer.train_config.total_training_steps,
-        checkpoint_path=checkpoint_file,
-    )
+    # checkpoint_file = os.path.join(ei_trainer.checkpoint_path, "checkpoint_final.pt")
 
     # Cleanup
     if train_config.wandb_logging:

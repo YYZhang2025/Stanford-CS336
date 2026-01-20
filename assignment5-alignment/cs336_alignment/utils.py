@@ -74,14 +74,16 @@ def get_device(verbose: bool = True, rank: int = 0, use_mps: bool = True) -> tor
 def save_model_checkpoint(
     model: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
-    cur_step: int,
+    cur_step: int | None,
     checkpoint_path: str,
 ):
     state = {
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
-        "step": cur_step,
     }
+    if cur_step is not None:
+        state["cur_step"] = cur_step
+
     torch.save(state, checkpoint_path)
     print_color(f"Saved model checkpoint to {checkpoint_path}", "cyan")
 
