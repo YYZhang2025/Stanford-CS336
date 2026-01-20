@@ -4,10 +4,9 @@ import os
 import dotenv
 import fire
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM
 
-from cs336_alignment.algs import SFTTrainer
-from cs336_alignment.base_config import TrainConfig
+from cs336_alignment.algs import SFTTrainer, SFTTrainingConfig
 from cs336_alignment.utils import get_device, print_color, save_model_checkpoint, seed_everything
 from cs336_alignment.vllm_utils import init_vllm
 
@@ -19,7 +18,7 @@ def main(
     logging.getLogger("vllm").setLevel(logging.WARNING)
     dotenv.load_dotenv()
 
-    train_config = TrainConfig.from_json(train_config_path)
+    train_config = SFTTrainingConfig.from_json(train_config_path)
     train_config.dataset_name = dataset_name
     seed_everything(train_config.seed)
 

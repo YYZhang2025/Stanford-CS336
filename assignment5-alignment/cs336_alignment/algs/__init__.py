@@ -1,4 +1,4 @@
-from .ei import EITrainer
-from .sft import SFTTrainer
+from .ei import EITrainConfig, EITrainer
+from .sft import SFTTrainer, SFTTrainingConfig
 
-__all__ = ["SFTTrainer", "EITrainer"]
+__all__ = ["SFTTrainer", "SFTTrainingConfig", "EITrainer", "EITrainConfig"]

@@ -7,10 +7,10 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 cd "$REPO_ROOT"
 
 
-TRAIN_CONFIG_JSON="./configs/sft/train_config.json"
+TRAIN_CONFIG_JSON="./configs/ei/train_config.json"
 # Dataset name can be 'math' 'gsm8k' 'mmlu' for now
 DATASET_NAME="math"
 
-uv run python train_sft.py \
+uv run python train_ei.py \
   --train_config_path "$TRAIN_CONFIG_JSON" \
   --dataset_name "$DATASET_NAME"

@@ -6,45 +6,73 @@ from typing import Callable
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import wandb
-from torch.utils.data import DataLoader, Dataset
 from tqdm import trange
 from transformers import AutoTokenizer, PreTrainedModel
 from vllm import SamplingParams
 
 from cs336_alignment.algs.sft import (
     get_response_log_probs,
-    sft_collate_fn,
     sft_microbatch_train_step,
     tokenize_prompt_and_output,
 )
-from cs336_alignment.base_config import TrainConfig
+from cs336_alignment.base_config import BaseConfig
 from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
 from cs336_alignment.eval import evaluate_responses
-from cs336_alignment.lr import get_lr, update_learning_rate
+from cs336_alignment.lr import update_learning_rate
 from cs336_alignment.utils import (
     clear_memory,
-    cycle_dataloader,
     get_ctx,
     print_color,
     print_rich_dict,
-    save_model_checkpoint,
     to_float,
 )
 from cs336_alignment.vllm_utils import generate_responses, load_policy_into_vllm_instance
 
 
 @dataclass
-class EITrainConfig(TrainConfig):
-    n_ei_steps: int = 5
+class EITrainConfig(BaseConfig):
+    # EI training config
+    ei_steps: int = 5
     ei_batch_size: int = 512
+    reward_fn: str = "r1_zero_reward_fn"
+    num_responses_per_prompt: int = 4
 
-    sft_steps_per_ei_step: int = 1
+    # SFT hyperparameters
+    sft_steps_per_ei_step: int = 100
     sft_batch_size: int = 2
     sft_gradient_accumulation_steps: int = 64
 
-    reward_fn: Callable = field(default=r1_zero_reward_fn)
+    # Optimizer hyperparameters
+    betas: tuple = field(default=(0.9, 0.98))
+    weight_decay: float = 1e-5
+    max_lr: float = 5e-6
+    max_grad_norm: float = 1.0
+
+    # Other training options
+    mixed_precision_training: bool = True
+
+    save_interval: int = 100
+    checkpoint_dir: str = "./checkpoints"
+
+    # Evaluation and sampling
+    eval_steps: int = 50
+    seed: int = 42
+
+    # For VLLM sampling during evaluation and response sampling
+    sampling_temperature: float = 1.0
+    sampling_max_tokens: int = 1024
+    sampling_top_p: float = 1.0
+    sampling_stop_tokens: list[str] = field(default_factory=lambda: ["</answer>"])
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.total_training_steps = self.ei_steps * self.sft_steps_per_ei_step
+
+
+REWARD_FN_MAP = {
+    "r1_zero_reward_fn": r1_zero_reward_fn,
+}
 
 
 # ========== dataset loading functions ==========#
@@ -227,13 +255,13 @@ class EITrainer:
     def _load_into_vllm(self, vllm):
         load_policy_into_vllm_instance(self.model, vllm)
         print_color(
-            f"Loaded SFT model weights at step {self.cur_step} into VLLM instance for evaluation.",
+            f"Loaded SFT model weights at step {self.ei_cur_step} into VLLM instance for evaluation.",
             color="magenta",
         )
 
     @torch.no_grad()
     def evaluate(self, vllm=None):
-        print_color("Evaluating EI model on test dataset...", color="magenta")
+        print_color(f"Evaluating EI model at {self.ei_cur_step} on test dataset ", color="magenta")
         self._load_into_vllm(vllm)
 
         overview = evaluate_responses(
@@ -253,7 +281,9 @@ class EITrainer:
         vllm=None,
         num_samples: int = 5,
     ) -> list[str]:
-        print_color(f"Sampling {num_samples} responses from EI model...", color="cyan")
+        print_color(
+            f"Sampling {num_samples} responses from EI model at step {self.ei_cur_step}...", color="cyan"
+        )
         self._load_into_vllm(vllm)
 
         index = random.sample(range(len(self.test_prompts)), k=num_samples)
@@ -289,22 +319,13 @@ class EITrainer:
             color="green",
         )
 
-        def get_batch(prompts, responses, answers):
-            random_index = random.sample(range(len(prompts)), k=self.train_config.sft_batch_size)
-            batch_prompts = [prompts[i] for i in random_index]
-            batch_responses = [responses[i] for i in random_index]
-            batch_answers = [answers[i] for i in random_index]
-
-            batch = []
-            for prompt, response, answer in zip(batch_prompts, batch_responses, batch_answers):
-                batch.append((prompt, response, answer))
-            return sft_collate_fn(batch, self.tokenizer)
-
         for _ in range(self.train_config.sft_steps_per_ei_step):
             batch_loss = 0.0
-            self.cur_step += 1
+            self.sft_cur_step += 1
             for _ in trange(self.train_config.sft_gradient_accumulation_steps):
-                micro_batch = get_batch(prompts, responses, answers)
+                micro_batch = get_sft_batch(
+                    prompts, responses, answers, self.tokenizer, batch_size=self.train_config.sft_batch_size
+                )
                 input_ids = micro_batch["input_ids"].to(self.device, non_blocking=True)
                 labels = micro_batch["labels"].to(self.device, non_blocking=True)
                 response_mask = micro_batch["response_mask"].to(self.device, non_blocking=True)
@@ -327,12 +348,17 @@ class EITrainer:
 
                 del input_ids, labels, response_mask
                 batch_loss += to_float(loss_scaled)
+
+            print_color(
+                f"[ei step {self.ei_cur_step}][sft step {self.sft_cur_step}] SFT batch loss: {batch_loss:.4f}",
+                color="green",
+            )
             nn.utils.clip_grad_norm_(self.model.parameters(), self.train_config.max_grad_norm)
             update_learning_rate(
                 optimizer=self.optimizer,
                 step=self.sft_cur_step,
                 max_lr=self.train_config.max_lr,
-                total_steps=500,  # TODO: Need to set total_steps properly
+                total_steps=self.train_config.total_training_steps,
             )
             self.optimizer.step()
             self.optimizer.zero_grad(set_to_none=True)
@@ -347,9 +373,10 @@ class EITrainer:
         print_color("||Training on dataset: " + self.train_config.dataset_name, color="green")
         print_color("||" + "=" * 80, color="green")
 
-        for step in range(self.ei_start_step, self.train_config.n_ei_steps):
-            self.model.train()
+        self._load_into_vllm(vllm)
 
+        for step in range(self.ei_start_step, self.train_config.ei_steps):
+            self.model.train()
             self.ei_cur_step = step + 1
 
             # 3. Sample a batch of questions from the training dataset
@@ -357,13 +384,13 @@ class EITrainer:
                 prompts=self.train_prompts,
                 answers=self.train_answers,
                 batch_size=self.train_config.ei_batch_size,
-                num_responses_per_prompt=4,
+                num_responses_per_prompt=self.train_config.num_responses_per_prompt,
             )
             prompts = ei_batch["prompts"]
             true_answers = ei_batch["true_answers"]
 
             # 4. Set the old policy model
-            self._load_into_vllm(vllm)
+            # (already set at the end of last EI step)
 
             # 5. Sample responses from the current policy model
             sampled_prompts, sampled_responses = sample_g_outputs_per_prompt(
@@ -376,7 +403,7 @@ class EITrainer:
             rewards_dict = compute_rewards_from_responses(
                 sampled_responses,
                 true_answers,
-                reward_fn=self.train_config.reward_fn,
+                reward_fn=REWARD_FN_MAP[self.train_config.reward_fn],
             )
 
             # 7. Filter responses by reward
@@ -399,6 +426,8 @@ class EITrainer:
             clear_memory()
             log_dict = {}
             self._load_into_vllm(vllm)  # load updated model into vllm
+
+            self.sample_responses(vllm=vllm, num_samples=5)
             out = self.evaluate(vllm)
 
             log_dict["eval/answer_accuracy"] = out["answer_accuracy"]
@@ -407,5 +436,3 @@ class EITrainer:
             log_dict["eval/formatted_but_answer_wrong"] = out["formatted_but_answer_wrong"]
             log_dict["eval/reward_1"] = out["reward_1"]
             wandb.log(log_dict, step=self.ei_cur_step)
-
-            self.sample_responses(vllm=vllm, num_samples=5)

@@ -2,11 +2,23 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
+
+T = TypeVar("T", bound="BaseConfig")
 
 
 @dataclass
-class TrainConfig:
+class BaseConfig:
+    """Reusable config base class.
+
+    Subclasses should be `@dataclass`es. This base provides:
+      - `from_json(path)` / `to_json(path)`
+      - `from_dict(mapping)` / `to_dict()`
+
+    By default, unknown keys in the JSON/dict are ignored.
+    Set `strict=True` to raise on unknown keys.
+    """
+
     model_name: str = "Qwen/Qwen2.5-Math-1.5B"
     prompt_template_path: str = "./cs336_alignment/prompts/r1_zero.prompt"
 
@@ -19,6 +31,49 @@ class TrainConfig:
     wandb_logging: bool = True
     project_name: str = "assignment05-alignment"
     run_name: str = ""  # will be set in __post_init__
+
+    def __post_init__(self):
+        self.run_name = f"{self.model_name.split('/')[-1]}_dataset({self.dataset_name})"
+
+    @classmethod
+    def from_json(cls: type[T], path: str | Path, *, strict: bool = False) -> T:
+        path = Path(path)
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, Mapping):
+            raise TypeError(f"Expected a JSON object at {path}, got {type(data).__name__}")
+        return cls.from_dict(data, strict=strict)
+
+    @classmethod
+    def from_dict(cls: type[T], data: Mapping[str, Any], *, strict: bool = False) -> T:
+        allowed = {f.name for f in fields(cls)}
+        unknown = [k for k in data.keys() if k not in allowed]
+        if strict and unknown:
+            raise KeyError(f"Unknown config keys for {cls.__name__}: {unknown}")
+        filtered: dict[str, Any] = {k: v for k, v in dict(data).items() if k in allowed}
+        return cls(**filtered)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {f.name: getattr(self, f.name) for f in fields(self)}
+
+    def to_json(self, path: str | Path, *, indent: int = 2) -> None:
+        path = Path(path)
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(self.to_dict(), f, ensure_ascii=False, indent=indent)
+
+
+@dataclass
+class EITrainConfig(BaseConfig):
+    # EI training config
+    ei_steps: int = 5
+    ei_batch_size: int = 512
+    reward_fn: str = "r1_zero_reward_fn"
+    num_responses_per_prompt: int = 4
+
+    # SFT hyperparameters
+    sft_steps_per_ei_step: int = 100
+    sft_batch_size: int = 2
+    sft_gradient_accumulation_steps: int = 64
 
     # Optimizer hyperparameters
     betas: tuple = field(default=(0.9, 0.98))
@@ -35,7 +90,6 @@ class TrainConfig:
     # Evaluation and sampling
     eval_steps: int = 50
     seed: int = 42
-    sample_interval: int = 20
 
     # For VLLM sampling during evaluation and response sampling
     sampling_temperature: float = 1.0
@@ -44,25 +98,13 @@ class TrainConfig:
     sampling_stop_tokens: list[str] = field(default_factory=lambda: ["</answer>"])
 
     def __post_init__(self):
-        self.run_name = f"{self.model_name.split('/')[-1]}_dataset({self.dataset_name})"
+        super().__post_init__()
+        self.total_training_steps = self.ei_steps * self.sft_steps_per_ei_step
 
-    @classmethod
-    def from_json(cls, path: str | Path) -> "TrainConfig":
-        path = Path(path)
-        with path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        return cls.from_dict(data)
 
-    @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> "TrainConfig":
-        allowed = {f.name for f in fields(cls)}
-        filtered: dict[str, Any] = {k: v for k, v in dict(data).items() if k in allowed}
-        return cls(**filtered)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {f.name: getattr(self, f.name) for f in fields(self)}
-
-    def to_json(self, path: str | Path, *, indent: int = 2) -> None:
-        path = Path(path)
-        with path.open("w", encoding="utf-8") as f:
-            json.dump(self.to_dict(), f, ensure_ascii=False, indent=indent)
+if __name__ == "__main__":
+    # Example usage
+    config = EITrainConfig()
+    config.to_json("ei_train_config_example.json")
+    loaded_config = EITrainConfig.from_json("ei_train_config_example.json")
+    print(loaded_config)

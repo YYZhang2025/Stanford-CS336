@@ -4,22 +4,21 @@ import os
 import dotenv
 import fire
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM
 
-from cs336_alignment.algs import EITrainer
-from cs336_alignment.base_config import TrainConfig
-from cs336_alignment.utils import get_device, print_color, save_model_checkpoint, seed_everything
+from cs336_alignment.algs import EITrainConfig, EITrainer
+from cs336_alignment.utils import get_device, print_color, seed_everything
 from cs336_alignment.vllm_utils import init_vllm
 
 
 def main(
-    train_config_path: str = "configs/sft/train_config.json",
+    train_config_path: str = "configs/ei/train_config.json",
     dataset_name: str = "math",
 ):
     logging.getLogger("vllm").setLevel(logging.WARNING)
     dotenv.load_dotenv()
 
-    train_config = TrainConfig.from_json(train_config_path)
+    train_config = EITrainConfig.from_json(train_config_path)
     train_config.dataset_name = dataset_name
     seed_everything(train_config.seed)
 
