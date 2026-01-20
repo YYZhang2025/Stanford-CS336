@@ -20,6 +20,8 @@ CS336: Language Modeling from Scratch <br/>
 - [Assignment 03: Scaling Laws](#assignment-03-scaling-laws)
 - [Assignment 04: Data](#assignment-04-data)
 - [Assignment 05: Alignment \& RLHF (GRPO)](#assignment-05-alignment--rlhf-grpo)
+  - [SFT](#sft)
+  - [Expert Iteration](#expert-iteration)
 
 
 
@@ -306,6 +308,13 @@ raise NotImplementedError("This is a placeholder for Assignment 04 solution.")
 ```
 
 # Assignment 05: Alignment & RLHF (GRPO)
-```Python
-raise NotImplementedError("This is a placeholder for Assignment 05 solution.")
-```
+
+## SFT 
+![alt text](./assets/sft-reward.png)
+![](./assets/sft-format.png)
+
+
+
+## Expert Iteration
+![](./assets/ei-format-reward.png)
+![](./assets/ei-reward.png)
