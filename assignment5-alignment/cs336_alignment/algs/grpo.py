@@ -316,6 +316,7 @@ def grpo_microbatch_train_step(
         dim=-1,
     )
 
+    masked_loss = masked_loss.mean()
     masked_loss = masked_loss / gradient_accumulation_steps
     masked_loss.backward()
 
