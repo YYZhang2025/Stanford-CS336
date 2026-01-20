@@ -86,12 +86,21 @@ def load_dataset(path: str, prompt_template: str = ""):
 
 
 def sample_g_outputs_per_prompt(vllm, sampling_params, prompts: list[str]):
+    rollout_sampling_params = SamplingParams(
+        temperature=sampling_params.temperature,
+        max_tokens=sampling_params.max_tokens,
+        min_tokens=sampling_params.min_tokens,
+        top_p=sampling_params.top_p,
+        stop=sampling_params.stop,
+        include_stop_str_in_output=sampling_params.include_stop_str_in_output,
+        logprobs=1, 
+    )
+
     all_responses, gen_ids, old_log_probs = generate_responses(
         vllm,
         prompts,
-        sampling_params.copy(logprobs=1),
+        rollout_sampling_params,
     )
-
     return all_responses, gen_ids, old_log_probs
 
 
