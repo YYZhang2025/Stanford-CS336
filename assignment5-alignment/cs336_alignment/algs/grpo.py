@@ -524,7 +524,7 @@ class GRPOTrainer:
                 tokenized = tokenize_prompt_and_output(micro_prompts, micro_responses, self.tokenizer)
                 input_ids = tokenized["input_ids"].to(self.device, non_blocking=True)
                 labels = tokenized["labels"].to(self.device, non_blocking=True)
-                response_mask = tokenized["response_attention_mask"].to(self.device, non_blocking=True)
+                response_mask = tokenized["response_mask"].to(self.device, non_blocking=True)
 
                 T = response_mask.shape[1]
                 micro_old_log_probs = pad_logprobs_to_T(
