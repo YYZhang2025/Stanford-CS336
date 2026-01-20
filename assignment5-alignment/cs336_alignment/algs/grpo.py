@@ -25,6 +25,7 @@ from cs336_alignment.utils import (
     print_rich_dict,
 )
 from cs336_alignment.vllm_utils import generate_responses, load_policy_into_vllm_instance
+from tests.conftest import response_mask
 
 REWARD_FN_MAP = {
     "r1_zero_reward_fn": r1_zero_reward_fn,
@@ -321,6 +322,17 @@ def grpo_microbatch_train_step(
     return masked_loss, metadata
 
 
+def pad_logprobs_to_T(old_lp_list: list[list[float]], T: int, pad_value: float = 0.0) -> torch.Tensor:
+    # old_lp_list: length B, each is length Li (variable)
+    out = []
+    for lp in old_lp_list:
+        lp = lp[:T]  # truncate if longer than T
+        if len(lp) < T:
+            lp = lp + [pad_value] * (T - len(lp))
+        out.append(lp)
+    return torch.tensor(out, dtype=torch.float32)  # [B, T]
+
+
 class GRPOTrainer:
     def __init__(
         self,
@@ -507,12 +519,19 @@ class GRPOTrainer:
                 micro_responses = all_responses[start_index:end_index]
                 micro_advantages = torch.tensor(advantages[start_index:end_index]).to(self.device)
                 micro_raw_rewards = torch.tensor(raw_rewards[start_index:end_index]).to(self.device)
-                micro_old_log_probs = torch.tensor(old_log_probs[start_index:end_index]).to(self.device)
+                # micro_old_log_probs = old_log_probs[start_index:end_index]
 
                 tokenized = tokenize_prompt_and_output(micro_prompts, micro_responses, self.tokenizer)
                 input_ids = tokenized["input_ids"].to(self.device, non_blocking=True)
                 labels = tokenized["labels"].to(self.device, non_blocking=True)
                 response_mask = tokenized["response_attention_mask"].to(self.device, non_blocking=True)
+
+                T = response_mask.shape[1]
+                micro_old_log_probs = pad_logprobs_to_T(
+                    old_lp_list=old_log_probs[start_index:end_index],
+                    T=T,
+                    pad_value=0.0,
+                ).to(self.device, non_blocking=True)
 
                 with self.ctx:
                     policy_outputs = get_response_log_probs(
