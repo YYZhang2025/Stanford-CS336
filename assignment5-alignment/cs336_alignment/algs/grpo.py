@@ -583,26 +583,25 @@ class GRPOTrainer:
                 vllm,
             )
 
-            if self.grpo_step % 5 == 0:
-                load_policy_into_vllm_instance(
-                    self.model,
-                    vllm,
-                )
-                out = self.evaluate(vllm)
-                log_dict = {}
-                log_dict["eval/answer_accuracy"] = out["answer_accuracy"]
-                log_dict["eval/answer_correct"] = out["answer_correct"]
-                log_dict["eval/format_correct"] = out["format_correct"]
-                log_dict["eval/formatted_but_answer_wrong"] = out["formatted_but_answer_wrong"]
-                log_dict["eval/reward_1"] = out["reward_1"]
-                wandb.log(log_dict, step=self.grpo_step)
+            load_policy_into_vllm_instance(
+                self.model,
+                vllm,
+            )
+            out = self.evaluate(vllm)
+            log_dict = {}
+            log_dict["eval/answer_accuracy"] = out["answer_accuracy"]
+            log_dict["eval/answer_correct"] = out["answer_correct"]
+            log_dict["eval/format_correct"] = out["format_correct"]
+            log_dict["eval/formatted_but_answer_wrong"] = out["formatted_but_answer_wrong"]
+            log_dict["eval/reward_1"] = out["reward_1"]
+            wandb.log(log_dict, step=self.grpo_step)
 
-                self.sample_responses(vllm=vllm, num_samples=3)
+            self.sample_responses(vllm=vllm, num_samples=3)
 
             # Save checkpoint
-            checkpoint_file = os.path.join(
-                self.checkpoint_path,
-                f"grpo_step_{self.grpo_step}.pt",
-            )
-            torch.save(self.model.state_dict(), checkpoint_file)
-            print_color(f"Saved GRPO checkpoint at {checkpoint_file}", color="magenta")
+            # checkpoint_file = os.path.join(
+            #     self.checkpoint_path,
+            #     f"grpo_step_{self.grpo_step}.pt",
+            # )
+            # torch.save(self.model.state_dict(), checkpoint_file)
+            # print_color(f"Saved GRPO checkpoint at {checkpoint_file}", color="magenta")
