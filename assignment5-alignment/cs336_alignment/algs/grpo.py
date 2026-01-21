@@ -16,7 +16,7 @@ from cs336_alignment.algs.sft import (
     tokenize_prompt_and_output,
 )
 from cs336_alignment.base_config import BaseConfig
-from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
+from cs336_alignment.drgrpo_grader import question_only_reward_fn, r1_zero_reward_fn
 from cs336_alignment.eval import evaluate_responses
 from cs336_alignment.utils import (
     clear_memory,
@@ -25,11 +25,8 @@ from cs336_alignment.utils import (
     print_rich_dict,
 )
 from cs336_alignment.vllm_utils import generate_responses, load_policy_into_vllm_instance
-from tests.conftest import response_mask
 
-REWARD_FN_MAP = {
-    "r1_zero_reward_fn": r1_zero_reward_fn,
-}
+REWARD_FN_MAP = {"r1_zero_reward_fn": r1_zero_reward_fn, "question_only_reward_fn": question_only_reward_fn}
 
 
 @dataclass
@@ -68,6 +65,11 @@ class GRPOTrainConfig(BaseConfig):
 
     def __post_init__(self):
         self.run_name = f"grpo_dataset({self.dataset_name})_reward({self.reward_fn})_prompt({self.prompt_template_path.split('/')[-1]})_loss_type({self.loss_type})"
+
+        assert self.rollout_batch_size % self.group_size == 0, (
+            "rollout_batch_size must be divisible by group_size"
+        )
+        self.n_prompts_per_rollout_batch = self.rollout_batch_size // self.group_size
 
 
 def load_dataset(path: str, prompt_template: str = ""):
@@ -465,18 +467,18 @@ class GRPOTrainer:
         sample_prompts, sample_answers = sample_batch_questions(
             self.train_prompts,
             self.train_answers,
-            self.train_config.rollout_batch_size,
+            self.train_config.n_prompts_per_rollout_batch,
             self.train_config.group_size,
         )
 
-        print_color("Load into old policy VLLM instance...", color="green")
-        load_policy_into_vllm_instance(
-            self.model,
-            vllm,
-        )
+        # This will be done at the end of the previous training step while do the evaluation
+        # print_color("Load into old policy VLLM instance...", color="green")
+        # load_policy_into_vllm_instance(
+        #     self.model,
+        #     vllm,
+        # )
 
         print_color("Generating rollout responses...", color="green")
-
         (all_responses, gen_ids, old_log_probs) = sample_g_outputs_per_prompt(
             vllm,
             self.sampling_params,
@@ -495,10 +497,9 @@ class GRPOTrainer:
         )
 
         n_train_steps = self.train_config.epochs_per_rollout_batch * (
-            self.train_config.rollout_batch_size
-            * self.train_config.group_size
-            // self.train_config.train_batch_size
+            self.train_config.rollout_batch_size // self.train_config.train_batch_size
         )
+
         print_color(f"Performing {n_train_steps} training steps...", color="green")
         for train_step in range(n_train_steps):
             clear_memory()
