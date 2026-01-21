@@ -506,13 +506,11 @@ class GRPOTrainer:
             batch_loss = 0.0
 
             for micro_step in trange(
-                self.train_config.train_batch_size // self.train_config.gradient_accumulation_steps,
+                self.train_config.gradient_accumulation_steps,
                 desc="Microbatches",
             ):
-                start_index = (
-                    micro_step
-                    * (self.train_config.train_batch_size // self.train_config.gradient_accumulation_steps)
-                    + train_step * self.train_config.train_batch_size
+                start_index = micro_step * (
+                    self.train_config.train_batch_size // self.train_config.gradient_accumulation_steps
                 )
                 end_index = start_index + (
                     self.train_config.train_batch_size // self.train_config.gradient_accumulation_steps
@@ -588,6 +586,9 @@ class GRPOTrainer:
                 self.model,
                 vllm,
             )
+
+            self.sample_responses(vllm=vllm, num_samples=3)
+
             out = self.evaluate(vllm)
             log_dict = {}
             log_dict["eval/answer_accuracy"] = out["answer_accuracy"]
@@ -596,8 +597,6 @@ class GRPOTrainer:
             log_dict["eval/formatted_but_answer_wrong"] = out["formatted_but_answer_wrong"]
             log_dict["eval/reward_1"] = out["reward_1"]
             wandb.log(log_dict, step=self.grpo_step)
-
-            self.sample_responses(vllm=vllm, num_samples=3)
 
             # Save checkpoint
             # checkpoint_file = os.path.join(
