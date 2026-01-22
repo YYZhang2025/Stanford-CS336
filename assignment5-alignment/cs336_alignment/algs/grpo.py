@@ -148,7 +148,6 @@ def compute_group_normalized_rewards(
             normalized_rewards = group_rewards_tensor - group_mean
         advs.extend(normalized_rewards.tolist())
 
-    advs = torch.tensor(advs)
     meta_info = {}
 
     return advs, rewards, meta_info
@@ -336,6 +335,47 @@ def pad_logprobs_to_T(old_lp_list: list[list[float]], T: int, pad_value: float =
     return torch.tensor(out, dtype=torch.float32)  # [B, T]
 
 
+def align_old_logprobs_to_response_mask(
+    old_lp_list: list[list[float]],
+    response_mask: torch.Tensor,
+    pad_value: float = 0.0,
+) -> torch.Tensor:
+    """Align vLLM per-generated-token old logprobs to packed-sequence positions.
+
+    - vLLM returns `old_lp_list[i]` over *generated response tokens only* (variable length).
+    - `response_mask[i]` marks the positions in the packed (prompt+response) sequence that
+      correspond to response tokens whose logprobs we train on.
+
+    This function scatters each sequence's old logprobs into the `True` positions of
+    `response_mask`, leaving prompt / padding positions as `pad_value`.
+
+    Returns:
+        Tensor[float32] of shape [B, T] aligned with `policy_log_probs`.
+    """
+    if response_mask.dim() != 2:
+        raise ValueError(f"response_mask must be [B, T], got shape={tuple(response_mask.shape)}")
+
+    B, T = response_mask.shape
+    out = torch.full((B, T), pad_value, dtype=torch.float32)
+
+    # Work on CPU indices for simplicity/portability.
+    mask_cpu = response_mask.detach().to("cpu").to(torch.bool)
+
+    for i in range(B):
+        idx = torch.nonzero(mask_cpu[i], as_tuple=False).squeeze(-1)
+        if idx.numel() == 0:
+            continue
+
+        lp = old_lp_list[i]
+        if lp is None or len(lp) == 0:
+            continue
+
+        n = min(len(lp), idx.numel())
+        out[i, idx[:n]] = torch.tensor(lp[:n], dtype=torch.float32)
+
+    return out
+
+
 class GRPOTrainer:
     def __init__(
         self,
@@ -413,7 +453,7 @@ class GRPOTrainer:
     @torch.no_grad()
     def evaluate(self, vllm=None):
         print_color(f"Evaluating EI model at {self.grpo_step} on test dataset ", color="magenta")
-        self._load_into_vllm(vllm)
+        # self._load_into_vllm(vllm)
 
         overview = evaluate_responses(
             vllm=vllm,
@@ -435,7 +475,7 @@ class GRPOTrainer:
         print_color(
             f"Sampling {num_samples} responses from EI model at step {self.grpo_step}...", color="cyan"
         )
-        self._load_into_vllm(vllm)
+        # self._load_into_vllm(vllm)
 
         index = random.sample(range(len(self.test_prompts)), k=num_samples)
         prompts = [self.test_prompts[i] for i in index]
@@ -526,10 +566,16 @@ class GRPOTrainer:
                 labels = tokenized["labels"].to(self.device, non_blocking=True)
                 response_mask = tokenized["response_mask"].to(self.device, non_blocking=True)
 
-                T = response_mask.shape[1]
-                micro_old_log_probs = pad_logprobs_to_T(
+                # T = response_mask.shape[1]
+                # micro_old_log_probs = pad_logprobs_to_T(
+                #     old_lp_list=old_log_probs[start_index:end_index],
+                #     T=T,
+                #     pad_value=0.0,
+                # ).to(self.device, non_blocking=True)
+                # Align vLLM old logprobs (response-only, variable length) to the packed sequence.
+                micro_old_log_probs = align_old_logprobs_to_response_mask(
                     old_lp_list=old_log_probs[start_index:end_index],
-                    T=T,
+                    response_mask=response_mask,
                     pad_value=0.0,
                 ).to(self.device, non_blocking=True)
 
@@ -574,9 +620,8 @@ class GRPOTrainer:
         self,
         vllm,
     ):
-        for _ in trange(
+        for _ in range(
             self.train_config.n_grpo_steps,
-            desc="GRPO Training Steps",
         ):
             self.grpo_train_step(
                 vllm,
