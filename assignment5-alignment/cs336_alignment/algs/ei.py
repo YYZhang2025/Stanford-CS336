@@ -197,7 +197,7 @@ class EITrainer:
 
     @torch.no_grad()
     def evaluate(self, vllm=None):
-        print_color(f"Evaluating SFT model on test dataset at step {self.ei_cur_step}", color="magenta")
+        print_color(f"Evaluating EI model on test dataset at step {self.ei_cur_step}", color="magenta")
 
         overview = evaluate_responses(
             vllm=vllm,
@@ -216,7 +216,7 @@ class EITrainer:
         vllm=None,
         num_samples: int = 5,
     ):
-        print_color(f"Sampling {num_samples} responses from SFT model...", color="cyan")
+        print_color(f"Sampling {num_samples} responses from EI model...", color="cyan")
 
         index = random.sample(range(len(self.test_prompts)), k=num_samples)
         prompts = [self.test_prompts[i] for i in index]
@@ -387,11 +387,11 @@ class EITrainer:
             log_dict = {}
             load_policy_into_vllm_instance(self.model, vllm)  # load updated model into vllm
 
-            out = self.evaluate(vllm)
             self.sample_responses(
                 vllm=vllm,
             )
 
+            out = self.evaluate(vllm)
             log_dict["eval/answer_accuracy"] = out["answer_accuracy"]
             log_dict["eval/answer_correct"] = out["answer_correct"]
             log_dict["eval/format_correct"] = out["format_correct"]

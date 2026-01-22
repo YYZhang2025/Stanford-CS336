@@ -11,10 +11,7 @@ from tqdm import trange
 from transformers import AutoTokenizer, PreTrainedModel
 from vllm import SamplingParams
 
-from cs336_alignment.algs.sft import (
-    get_response_log_probs,
-    tokenize_prompt_and_output,
-)
+from cs336_alignment.algs.utils import get_response_log_probs, log_generation, tokenize_prompt_and_output
 from cs336_alignment.base_config import BaseConfig
 from cs336_alignment.drgrpo_grader import question_only_reward_fn, r1_zero_reward_fn
 from cs336_alignment.eval import evaluate_responses
@@ -26,7 +23,7 @@ REWARD_FN_MAP = {"r1_zero_reward_fn": r1_zero_reward_fn, "question_only_reward_f
 
 @dataclass
 class GRPOTrainConfig(BaseConfig):
-    n_grpo_steps: int = 200
+    n_grpo_cur_steps: int = 200
     rollout_batch_size: int = 256
     learning_rate: float = 1e-5
     advantage_eps: float = 1e-6
@@ -60,7 +57,7 @@ class GRPOTrainConfig(BaseConfig):
     seed: int = 42
 
     def __post_init__(self):
-        self.run_name = f"grpo_dataset({self.dataset_name})_reward({self.reward_fn})_prompt({self.prompt_template_path.split('/')[-1]})_loss_type({self.loss_type})"
+        self.run_name = f"grpo_dataset({self.dataset_name})_prompt({self.prompt_template_path.split('/')[-1]})_reward({self.reward_fn})_loss_type({self.loss_type})"
 
         assert self.rollout_batch_size % self.group_size == 0, (
             "rollout_batch_size must be divisible by group_size"
@@ -181,17 +178,6 @@ def compute_policy_gradient_loss(
 ):
     """
     Compute the policy-gradient loss at every token.
-
-    Args:
-        policy_log_probs: Log probabilities of the current policy at each token.
-        loss_type: The type of policy gradient loss to compute.
-        raw_rewards: Raw rewards for each sequence.
-        advantages: Pre-computed advantages for each sequence (if applicable).
-        old_log_probs: Log probabilities from the old policy (if applicable).
-        cliprange: Clipping range for GRPO-CLIP loss.
-    Returns:
-
-        A tuple of (loss tensor, metadata dictionary).
     """
 
     if loss_type == "no_baseline":
@@ -269,18 +255,6 @@ def grpo_microbatch_train_step(
 ) -> tuple[torch.Tensor, dict]:
     """
     Compute the GRPO loss over microbatches for training.
-
-    Args:
-        policy_log_probs: Log probabilities of the current policy at each token.
-        response_mask: Mask indicating valid tokens in the responses.
-        gradient_accumulation_steps: Number of microbatches to accumulate gradients over.
-        loss_type: The type of policy gradient loss to compute.
-        raw_rewards: Raw rewards for each sequence.
-        advantages: Pre-computed advantages for each sequence (if applicable).
-        old_log_probs: Log probabilities from the old policy (if applicable).
-        cliprange: Clipping range for GRPO-CLIP loss.
-    Returns:
-        A tuple of (mean loss tensor, metadata dictionary).
     """
     loss, metadata = compute_policy_gradient_loss(
         policy_log_probs=policy_log_probs,
@@ -369,6 +343,11 @@ class GRPOTrainer:
         self.device = device
         self.dataset_dir_base = dataset_dir_base
 
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            pretrained_model_name_or_path=train_config.model_name,
+            use_fast=True,
+        )
+
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
             betas=train_config.betas,
@@ -380,26 +359,24 @@ class GRPOTrainer:
             device=device,
         )
 
-        with open(train_config.prompt_template_path, "r", encoding="utf-8") as f:
-            self.prompt_template = f.read().strip()
         dataset_dir = os.path.join(dataset_dir_base, train_config.dataset_name)
         train_prompts, train_cots, train_answers = load_dataset(
-            os.path.join(dataset_dir, "train.jsonl"), prompt_template=self.prompt_template
+            os.path.join(dataset_dir, "train.jsonl"),
+            prompt_template_path=self.train_config.prompt_template_path,
         )
         self.train_prompts = train_prompts
-        self.train_cots = train_cots
         self.train_answers = train_answers
 
         test_prompts, test_cots, test_answers = load_dataset(
-            os.path.join(dataset_dir, "test.jsonl"), prompt_template=self.prompt_template
+            os.path.join(dataset_dir, "test.jsonl"),
+            prompt_template_path=self.train_config.prompt_template_path,
         )
         self.test_prompts = test_prompts
-        self.test_cots = test_cots
-        self.test_answers = test_answers
+        self.test_true_answers = test_answers
 
         self.checkpoint_path = os.path.join(
             train_config.checkpoint_dir,
-            f"grpo_{train_config.model_name.split('/')[-1]}_{train_config.dataset_name}",
+            f"grpo_{train_config.model_name.split('/')[-1]}_{train_config.dataset_name}_{train_config.reward_fn}_loss({train_config.loss_type})",
         )
         os.makedirs(self.checkpoint_path, exist_ok=True)
         train_config.to_json(
@@ -416,33 +393,20 @@ class GRPOTrainer:
 
         self.reward_fn = REWARD_FN_MAP[self.train_config.reward_fn]
 
-        self.grpo_step = 0
-
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            pretrained_model_name_or_path=train_config.model_name,
-            use_fast=True,
-        )
-
-    def _load_into_vllm(self, vllm):
-        load_policy_into_vllm_instance(self.model, vllm)
-        print_color(
-            f"Loaded SFT model weights at step {self.grpo_step} into VLLM instance for evaluation.",
-            color="magenta",
-        )
+        self.grpo_cur_step = 0
 
     @torch.no_grad()
     def evaluate(self, vllm=None):
-        print_color(f"Evaluating EI model at {self.grpo_step} on test dataset ", color="magenta")
-        # self._load_into_vllm(vllm)
+        print_color(f"Evaluating GRPO model on test dataset at step {self.grpo_cur_step}", color="magenta")
 
         overview = evaluate_responses(
             vllm=vllm,
             prompts=self.test_prompts,
-            answers=self.test_answers,
+            answers=self.test_true_answers,
             sampling_params=self.sampling_params,
         )
 
-        print_color("Evaluation Overview:", color="magenta")
+        print_color("Evaluation Overview", color="magenta")
         print_rich_dict(overview)
         return overview
 
@@ -451,33 +415,24 @@ class GRPOTrainer:
         self,
         vllm=None,
         num_samples: int = 5,
-    ) -> list[str]:
-        print_color(
-            f"Sampling {num_samples} responses from EI model at step {self.grpo_step}...", color="cyan"
-        )
-        # self._load_into_vllm(vllm)
+    ):
+        print_color(f"Sampling {num_samples} responses from GRPO model...", color="cyan")
 
         index = random.sample(range(len(self.test_prompts)), k=num_samples)
         prompts = [self.test_prompts[i] for i in index]
-        true_answers = [self.test_answers[i] for i in index]
+        true_answers = [self.test_true_answers[i] for i in index]
 
-        responses = generate_responses(
-            vllm,
-            prompts,
-            self.sampling_params,
+        out = log_generation(
+            prompts=prompts,
+            true_answers=true_answers,
+            reward_fn=self.reward_fn,
+            model=self.model,
+            tokenizer=self.tokenizer,
+            vllm=vllm,
+            sampling_params=self.sampling_params,
         )
 
-        print_color("Sampled Responses:", color="cyan")
-        for i, (prompt, response, true_answer) in enumerate(zip(prompts, responses, true_answers)):
-            print_color(f"\n=== Example {i + 1} ===", color="cyan")
-            print_color("Prompt: ", color="cyan")
-            print(prompt)
-            print_color("Response: ", color="cyan")
-            print(response)
-            print_color("True Answer: ", color="cyan")
-            print(true_answer)
-
-        return responses
+        print_rich_dict(out)
 
     def grpo_train_step(
         self,
@@ -582,7 +537,7 @@ class GRPOTrainer:
                 batch_loss += micro_loss.item()
 
             print_color(
-                f"GRPO Step {self.grpo_step} | Train Step {train_step + 1}/{n_train_steps} | "
+                f"GRPO Step {self.grpo_cur_step} | Train Step {train_step + 1}/{n_train_steps} | "
                 f"Batch Loss: {batch_loss:.4f}",
                 color="green",
             )
@@ -593,7 +548,6 @@ class GRPOTrainer:
             self.optimizer.step()
             self.optimizer.zero_grad(set_to_none=True)
 
-        self.grpo_step += 1
         return raw_rewards, advantages, metadata
 
     def train(
@@ -601,12 +555,15 @@ class GRPOTrainer:
         vllm,
     ):
         for _ in range(
-            self.train_config.n_grpo_steps,
+            self.train_config.n_grpo_cur_steps,
         ):
+            self.grpo_cur_step += 1
+            log_dict = {}
             print_color(
-                f"\n=== GRPO Training Step {self.grpo_step} / {self.train_config.n_grpo_steps} ===",
+                f"\n=== GRPO Training Step {self.grpo_cur_step} / {self.train_config.n_grpo_cur_steps} ===",
                 color="magenta",
             )
+
             self.grpo_train_step(
                 vllm,
             )
@@ -616,22 +573,14 @@ class GRPOTrainer:
                 vllm,
             )
 
-            if self.grpo_step % self.train_config.eval_interval == 0:
-                self.sample_responses(vllm=vllm, num_samples=3)
+            if self.grpo_cur_step % self.train_config.eval_interval == 0:
+                clear_memory()
 
+                self.sample_responses(vllm=vllm, num_samples=3)
                 out = self.evaluate(vllm)
-                log_dict = {}
                 log_dict["eval/answer_accuracy"] = out["answer_accuracy"]
                 log_dict["eval/answer_correct"] = out["answer_correct"]
                 log_dict["eval/format_correct"] = out["format_correct"]
                 log_dict["eval/formatted_but_answer_wrong"] = out["formatted_but_answer_wrong"]
                 log_dict["eval/reward_1"] = out["reward_1"]
-                wandb.log(log_dict, step=self.grpo_step)
-
-            # Save checkpoint
-            # checkpoint_file = os.path.join(
-            #     self.checkpoint_path,
-            #     f"grpo_step_{self.grpo_step}.pt",
-            # )
-            # torch.save(self.model.state_dict(), checkpoint_file)
-            # print_color(f"Saved GRPO checkpoint at {checkpoint_file}", color="magenta")
+                wandb.log(log_dict, step=self.grpo_cur_step)

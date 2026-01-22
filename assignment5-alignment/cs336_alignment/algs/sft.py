@@ -382,10 +382,10 @@ class SFTTrainer:
                 clear_memory()
                 load_policy_into_vllm_instance(self.model, vllm)
 
-                out = self.evaluate(vllm)
                 self.sample_responses(
                     vllm=vllm,
                 )
+                out = self.evaluate(vllm)
 
                 log_dict["eval/answer_accuracy"] = out["answer_accuracy"]
                 log_dict["eval/answer_correct"] = out["answer_correct"]
