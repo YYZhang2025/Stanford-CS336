@@ -1,4 +1,5 @@
 import gc
+import json
 from contextlib import nullcontext
 
 import rich
@@ -102,3 +103,19 @@ def seed_everything(seed: int):
 
 def wrap_cot_with_answer(cot: str, answer: str) -> str:
     return f"{cot}\n</think> <answer>{str(answer)}</answer>"
+
+
+def load_dataset(path: str, prompt_template: str = ""):
+    rows = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            rows.append(json.loads(line))
+    prompts = []
+    cots = []
+    answers = []
+    for row in rows:
+        prompts.append(prompt_template.format(question=row["question"]))
+        cots.append(row["cot"])
+        answers.append(row["answer"])
+
+    return prompts, cots, answers

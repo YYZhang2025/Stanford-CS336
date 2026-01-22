@@ -16,6 +16,7 @@
   "max_context_length": 2048,
   "save_interval": 100,
   "checkpoint_dir": "./checkpoints",
+  "reward_fn": "r1_zero_reward_fn",
   "eval_steps": 10,
   "seed": 42,
   "sample_interval": 10000,

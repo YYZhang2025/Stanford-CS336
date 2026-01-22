@@ -18,12 +18,7 @@ from cs336_alignment.algs.sft import (
 from cs336_alignment.base_config import BaseConfig
 from cs336_alignment.drgrpo_grader import question_only_reward_fn, r1_zero_reward_fn
 from cs336_alignment.eval import evaluate_responses
-from cs336_alignment.utils import (
-    clear_memory,
-    get_ctx,
-    print_color,
-    print_rich_dict,
-)
+from cs336_alignment.utils import clear_memory, get_ctx, load_dataset, print_color, print_rich_dict
 from cs336_alignment.vllm_utils import generate_responses, load_policy_into_vllm_instance
 
 REWARD_FN_MAP = {"r1_zero_reward_fn": r1_zero_reward_fn, "question_only_reward_fn": question_only_reward_fn}
@@ -71,22 +66,6 @@ class GRPOTrainConfig(BaseConfig):
             "rollout_batch_size must be divisible by group_size"
         )
         self.n_prompts_per_rollout_batch = self.rollout_batch_size // self.group_size
-
-
-def load_dataset(path: str, prompt_template: str = ""):
-    rows = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            rows.append(json.loads(line))
-    prompts = []
-    cots = []
-    answers = []
-    for row in rows:
-        prompts.append(prompt_template.format(question=row["question"]))
-        cots.append(row["cot"])
-        answers.append(row["answer"])
-
-    return prompts, cots, answers
 
 
 def sample_g_outputs_per_prompt(vllm, sampling_params, prompts: list[str]):
