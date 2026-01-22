@@ -33,7 +33,7 @@ def run_tokenize_prompt_and_output(
                 a mask on the response tokens in `labels`.
     """
     # raise NotImplementedError
-    from cs336_alignment.datasets import tokenize_prompt_and_output
+    from cs336_alignment.algs.utils import tokenize_prompt_and_output
 
     return tokenize_prompt_and_output(
         prompt_strs=prompt_strs,
@@ -91,7 +91,7 @@ def run_compute_group_normalized_rewards(
 def run_compute_entropy(logits: torch.Tensor) -> torch.Tensor:
     """Get the entropy of the logits (i.e., entropy of the final dimension)."""
     # raise NotImplementedError
-    from cs336_alignment.algs.sft import compute_entropy
+    from cs336_alignment.algs.utils import compute_entropy
 
     return compute_entropy(logits)
 
@@ -126,7 +126,7 @@ def run_get_response_log_probs(
                 or padding; that is done in the train loop.
     """
     # raise NotImplementedError
-    from cs336_alignment.algs.sft import get_response_log_probs
+    from cs336_alignment.algs.utils import get_response_log_probs
 
     res = get_response_log_probs(
         model=model,
@@ -339,7 +339,7 @@ def run_masked_normalize(
             (mask=0) don't contribute to the sum.
     """
     # raise NotImplementedError
-    from cs336_alignment.algs.sft import masked_normalize
+    from cs336_alignment.algs.utils import masked_normalize
 
     return masked_normalize(
         tensor=tensor,
