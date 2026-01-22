@@ -88,10 +88,7 @@ def sft_microbatch_train_step(
         dim=-1,
     )
 
-    # loss_unscaled = -loss_unscaled.mean()
-    token_counts = response_mask.sum(dim=1).clamp_min(1).type_as(loss_unscaled)  # (batch_size,)
-    loss_unscaled = loss_unscaled / token_counts
-    loss_unscaled = -loss_unscaled.mean()
+    loss_unscaled = -loss_unscaled.mean()  # negative log likelihood per token
 
     loss_scaled = loss_unscaled / gradient_accumulation_steps
     loss_scaled.backward()
