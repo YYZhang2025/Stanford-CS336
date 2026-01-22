@@ -624,6 +624,10 @@ class GRPOTrainer:
         for _ in range(
             self.train_config.n_grpo_steps,
         ):
+            print_color(
+                f"\n=== GRPO Training Step {self.grpo_step} / {self.train_config.n_grpo_steps} ===",
+                color="magenta",
+            )
             self.grpo_train_step(
                 vllm,
             )
