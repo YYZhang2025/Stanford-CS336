@@ -37,13 +37,9 @@ def tokenize_prompt_and_output(
     response_mask = []
 
     for p_ids, o_ids in zip(prompt_tokens["input_ids"], output_tokens["input_ids"]):
-        print(f"Prompt IDs: {len(p_ids)}", p_ids)
-        print(f"Output IDs: {len(o_ids)}", o_ids)
         combined_ids = p_ids + o_ids
         input_ids.append(combined_ids)
         mask = ([False] * len(p_ids)) + ([True] * len(o_ids))
-
-        print(len(combined_ids), len(mask))
         response_mask.append(mask)
 
     MAX_LEN = max(len(ids) for ids in input_ids)

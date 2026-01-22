@@ -105,7 +105,10 @@ def wrap_cot_with_answer(cot: str, answer: str) -> str:
     return f"{cot}\n</think> <answer>{str(answer)}</answer>"
 
 
-def load_dataset(path: str, prompt_template: str = ""):
+def load_dataset(path: str, prompt_template_path: str = ""):
+    with open(prompt_template_path, "r", encoding="utf-8") as f:
+        prompt_template = f.read().strip()
+
     rows = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:

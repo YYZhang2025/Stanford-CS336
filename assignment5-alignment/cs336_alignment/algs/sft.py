@@ -53,9 +53,8 @@ class SFTTrainingConfig(BaseConfig):
     checkpoint_dir: str = "./checkpoints"
 
     # Evaluation and sampling
-    eval_steps: int = 50
+    eval_steps: int = 5
     seed: int = 42
-    sample_interval: int = 20
 
     reward_fn: str = "r1_zero_reward_fn"
 
@@ -134,7 +133,7 @@ class SFTDataset(Dataset):
 
     @classmethod
     def load_from_disk(cls, path: str, prompt_template_path: str):
-        prompts, cots, answers = load_dataset(path, prompt_template=prompt_template_path)
+        prompts, cots, answers = load_dataset(path, prompt_template_path=prompt_template_path)
         return cls(prompts, cots, answers)
 
 
@@ -253,7 +252,6 @@ class SFTTrainer:
     @torch.no_grad()
     def evaluate(self, vllm=None):
         print_color(f"Evaluating SFT model on test dataset at step {self.cur_step}", color="magenta")
-        load_policy_into_vllm_instance(self.model, vllm)
 
         overview = evaluate_responses(
             vllm=vllm,
@@ -273,7 +271,6 @@ class SFTTrainer:
         num_samples: int = 5,
     ):
         print_color(f"Sampling {num_samples} responses from SFT model...", color="cyan")
-        load_policy_into_vllm_instance(self.model, vllm)
 
         index = random.sample(range(len(self.test_prompts)), k=num_samples)
         prompts = [self.test_prompts[i] for i in index]
@@ -369,8 +366,10 @@ class SFTTrainer:
                 color="yellow",
             )
 
+            # Main Training Step
             loss, token_entropy_avg = self.train_step()
 
+            # Logging & Evaluation
             print_color(
                 f"Step {self.cur_step}/{self.train_config.total_training_steps}, Loss: {loss:.4f}, Lr: {get_lr(self.optimizer):.7f}\n"
             )
@@ -378,16 +377,14 @@ class SFTTrainer:
             log_dict["train/loss"] = loss
             log_dict["train/token_entropy_avg"] = token_entropy_avg
 
-            if self.cur_step % self.train_config.sample_interval == 0:
+            if self.cur_step % self.train_config.eval_steps == 0:
                 clear_memory()
+                load_policy_into_vllm_instance(self.model, vllm)
+
+                out = self.evaluate(vllm)
                 self.sample_responses(
                     vllm=vllm,
                 )
-
-            if self.cur_step % self.train_config.eval_steps == 0:
-                clear_memory()
-
-                out = self.evaluate(vllm)
 
                 log_dict["eval/answer_accuracy"] = out["answer_accuracy"]
                 log_dict["eval/answer_correct"] = out["answer_correct"]
