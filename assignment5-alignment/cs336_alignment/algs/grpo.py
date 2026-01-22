@@ -60,6 +60,7 @@ class GRPOTrainConfig(BaseConfig):
 
     # Others
     mixed_precision_training: bool = True
+    eval_interval: int = 5
     checkpoint_dir: str = "./checkpoints"
     seed: int = 42
 
@@ -632,16 +633,17 @@ class GRPOTrainer:
                 vllm,
             )
 
-            self.sample_responses(vllm=vllm, num_samples=3)
+            if self.grpo_step % self.train_config.eval_interval == 0:
+                self.sample_responses(vllm=vllm, num_samples=3)
 
-            out = self.evaluate(vllm)
-            log_dict = {}
-            log_dict["eval/answer_accuracy"] = out["answer_accuracy"]
-            log_dict["eval/answer_correct"] = out["answer_correct"]
-            log_dict["eval/format_correct"] = out["format_correct"]
-            log_dict["eval/formatted_but_answer_wrong"] = out["formatted_but_answer_wrong"]
-            log_dict["eval/reward_1"] = out["reward_1"]
-            wandb.log(log_dict, step=self.grpo_step)
+                out = self.evaluate(vllm)
+                log_dict = {}
+                log_dict["eval/answer_accuracy"] = out["answer_accuracy"]
+                log_dict["eval/answer_correct"] = out["answer_correct"]
+                log_dict["eval/format_correct"] = out["format_correct"]
+                log_dict["eval/formatted_but_answer_wrong"] = out["formatted_but_answer_wrong"]
+                log_dict["eval/reward_1"] = out["reward_1"]
+                wandb.log(log_dict, step=self.grpo_step)
 
             # Save checkpoint
             # checkpoint_file = os.path.join(
