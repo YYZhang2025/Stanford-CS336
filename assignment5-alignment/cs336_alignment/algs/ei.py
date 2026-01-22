@@ -261,10 +261,6 @@ class EITrainer:
         for _ in range(self.train_config.sft_steps_per_ei_step):
             batch_loss = 0.0
             token_entropy_avg = 0.0
-            print_color(
-                f"ei step {self.ei_cur_step} | sft step {self.sft_cur_step + 1}/{self.train_config.sft_steps_per_ei_step}",
-                color="green",
-            )
             self.sft_cur_step += 1
 
             # Accumulate gradients over micro-batches
@@ -354,7 +350,7 @@ class EITrainer:
 
             # 5. Sample responses from the current policy model
             print_color(
-                f"Sampling EI batch at EI step {self.ei_cur_step} on {len(self.train_prompts)} with {self.train_config.num_responses_per_prompt} responses per prompt",
+                f"Sampling EI batch at EI step {self.ei_cur_step} on {self.train_config.ei_batch_size} samples with {self.train_config.num_responses_per_prompt} responses per prompt",
                 color="green",
             )
             sampled_prompts, sampled_responses = sample_g_outputs_per_prompt(
@@ -399,4 +395,4 @@ class EITrainer:
             log_dict["eval/reward_1"] = out["reward_1"]
 
             if self.train_config.wandb_logging:
-                wandb.log(log_dict, step=self.ei_cur_step)
+                wandb.log(log_dict, step=self.sft_cur_step)
