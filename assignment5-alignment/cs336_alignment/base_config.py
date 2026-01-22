@@ -24,7 +24,7 @@ class BaseConfig:
 
     # Dataset Choices: "math", "gsm8k",  "mmlu"
     dataset_base_path: str = "./data/pre-processed"
-    dataset_name: str = "math"
+    dataset_name: str = "gsm8k"
     dataset_path: str = ""  # will be set in __post_init__
 
     # WanDB logging
