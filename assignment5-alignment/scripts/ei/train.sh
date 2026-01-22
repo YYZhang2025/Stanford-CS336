@@ -8,8 +8,8 @@ cd "$REPO_ROOT"
 
 
 TRAIN_CONFIG_JSON="./configs/ei/train_config.json"
-# Dataset name can be 'math' 'gsm8k' 'mmlu' for now
-DATASET_NAME="math"
+# Dataset name can be 'math' 'gsm8k' for now
+DATASET_NAME="gsm8k"
 
 uv run python train_ei.py \
   --train_config_path "$TRAIN_CONFIG_JSON" \

@@ -196,3 +196,25 @@ def log_generation(
 
     model.train()
     return {"summary": summary, "rows": rows}
+
+
+def sample_g_outputs_per_prompt(vllm, sampling_params, prompts: list[str]):
+    all_responses = generate_responses(
+        vllm,
+        prompts,
+        sampling_params,
+    )
+
+    return prompts, all_responses
+
+
+def compute_rewards_from_responses(
+    responses: list[str],
+    true_answers: list[str],
+    reward_fn: Callable,
+) -> list[dict]:
+    rewards = []
+    for response, answer in zip(responses, true_answers):
+        reward = reward_fn(response, answer)
+        rewards.append(reward)
+    return rewards

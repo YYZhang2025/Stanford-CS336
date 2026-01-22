@@ -1,4 +1,3 @@
-import json
 import os
 import random
 from dataclasses import dataclass, field
@@ -7,27 +6,32 @@ from typing import Callable
 import torch
 import torch.nn as nn
 import wandb
+from torch.utils.data import DataLoader
 from tqdm import trange
 from transformers import AutoTokenizer, PreTrainedModel
 from vllm import SamplingParams
 
-from cs336_alignment.algs.sft import (
+from cs336_alignment.algs.sft import SFTDataset, sft_collate_fn, sft_microbatch_train_step
+from cs336_alignment.algs.utils import (
+    REWARD_FN_MAP,
+    compute_rewards_from_responses,
     get_response_log_probs,
-    sft_microbatch_train_step,
-    tokenize_prompt_and_output,
+    log_generation,
+    sample_g_outputs_per_prompt,
 )
 from cs336_alignment.base_config import BaseConfig
-from cs336_alignment.drgrpo_grader import r1_zero_reward_fn
 from cs336_alignment.eval import evaluate_responses
 from cs336_alignment.lr import update_learning_rate
 from cs336_alignment.utils import (
     clear_memory,
+    cycle_dataloader,
     get_ctx,
+    load_dataset,
     print_color,
     print_rich_dict,
     to_float,
 )
-from cs336_alignment.vllm_utils import generate_responses, load_policy_into_vllm_instance
+from cs336_alignment.vllm_utils import load_policy_into_vllm_instance
 
 
 @dataclass
@@ -40,7 +44,7 @@ class EITrainConfig(BaseConfig):
 
     # SFT hyperparameters
     sft_steps_per_ei_step: int = 100
-    sft_batch_size: int = 2
+    sft_batch_size: int = 128
     sft_gradient_accumulation_steps: int = 64
 
     # Optimizer hyperparameters
@@ -66,13 +70,10 @@ class EITrainConfig(BaseConfig):
     sampling_stop_tokens: list[str] = field(default_factory=lambda: ["</answer>"])
 
     def __post_init__(self):
-        self.total_training_steps = self.ei_steps * self.sft_steps_per_ei_step
         self.run_name = f"ei_dataset({self.dataset_name})_reward({self.reward_fn})_prompt({self.prompt_template_path.split('/')[-1]})"
 
-
-REWARD_FN_MAP = {
-    "r1_zero_reward_fn": r1_zero_reward_fn,
-}
+        self.sft_micro_batch_size = self.sft_batch_size // self.sft_gradient_accumulation_steps
+        self.total_training_steps = self.ei_steps * self.sft_steps_per_ei_step
 
 
 # ========== dataset loading functions ==========#
@@ -99,68 +100,10 @@ def get_ei_batch(
     }
 
 
-def get_sft_batch(
-    prompts: list[str],
-    responses: list[str],
-    answers: list[str],
-    tokenizer: AutoTokenizer,
-    batch_size: int = 4,
-):
-    random_index = random.sample(range(len(prompts)), k=batch_size)
-    batch_prompts = [prompts[i] for i in random_index]
-    batch_responses = [responses[i] for i in random_index]
-    batch_answers = [answers[i] for i in random_index]
-
-    tokenized = tokenize_prompt_and_output(
-        batch_prompts,
-        batch_responses,
-        tokenizer,
-    )
-
-    tokenized["true_answers"] = batch_answers
-    return tokenized
-
-
-def load_dataset(path: str, prompt_template: str = ""):
-    rows = []
-    with open(path, "r", encoding="utf-8") as f:
-        for line in f:
-            rows.append(json.loads(line))
-    prompts = []
-    cots = []
-    answers = []
-    for row in rows:
-        prompts.append(prompt_template.format(question=row["question"]))
-        cots.append(row["cot"])
-        answers.append(row["answer"])
-
-    return prompts, cots, answers
-
-
 # ========== end dataset loading functions ==========#
 
 
 # ========== EI Alg helper functions ==========#
-def sample_g_outputs_per_prompt(vllm, sampling_params, prompts: list[str]):
-    all_responses = generate_responses(
-        vllm,
-        prompts,
-        sampling_params,
-    )
-
-    return prompts, all_responses
-
-
-def compute_rewards_from_responses(
-    responses: list[str],
-    answers: list[str],
-    reward_fn: Callable,
-) -> list[dict]:
-    rewards = []
-    for response, answer in zip(responses, answers):
-        reward = reward_fn(response, answer)
-        rewards.append(reward)
-    return rewards
 
 
 def filter_by_reward(
@@ -212,23 +155,23 @@ class EITrainer:
             device=device,
         )
 
-        # Load datasets
-        with open(train_config.prompt_template_path, "r", encoding="utf-8") as f:
-            self.prompt_template = f.read().strip()
+        # ======= Load Dataset =======#
         dataset_dir = os.path.join(dataset_dir_base, train_config.dataset_name)
         train_prompts, train_cots, train_answers = load_dataset(
-            os.path.join(dataset_dir, "train.jsonl"), prompt_template=self.prompt_template
+            os.path.join(dataset_dir, "train.jsonl"), train_config.prompt_template_path
         )
         self.train_prompts = train_prompts
-        self.train_cots = train_cots
         self.train_answers = train_answers
 
-        test_prompts, test_cots, test_answers = load_dataset(
-            os.path.join(dataset_dir, "test.jsonl"), prompt_template=self.prompt_template
+        test_prompts, test_cots, test_answer = load_dataset(
+            os.path.join(dataset_dir, "test.jsonl"), train_config.prompt_template_path
         )
         self.test_prompts = test_prompts
-        self.test_cots = test_cots
-        self.test_answers = test_answers
+        self.test_true_answers = test_answer
+        # ============================#
+
+        # ======= Other Initializations =======#
+        self.reward_fn = REWARD_FN_MAP[train_config.reward_fn]
 
         self.checkpoint_path = os.path.join(
             train_config.checkpoint_dir,
@@ -238,6 +181,7 @@ class EITrainer:
         train_config.to_json(
             os.path.join(self.checkpoint_path, "train_config.json"),
         )
+
         self.sampling_params = SamplingParams(
             temperature=self.train_config.sampling_temperature,
             max_tokens=self.train_config.sampling_max_tokens,
@@ -248,30 +192,22 @@ class EITrainer:
 
         # ======= Other state variables =======#
         self.ei_start_step = 0
-        self.ei_cur_step = 0
         self.sft_start_step = 0
+        self.ei_cur_step = 0
         self.sft_cur_step = 0
-
-    def _load_into_vllm(self, vllm):
-        load_policy_into_vllm_instance(self.model, vllm)
-        print_color(
-            f"Loaded SFT model weights at step {self.ei_cur_step} into VLLM instance for evaluation.",
-            color="magenta",
-        )
 
     @torch.no_grad()
     def evaluate(self, vllm=None):
-        print_color(f"Evaluating EI model at {self.ei_cur_step} on test dataset ", color="magenta")
-        self._load_into_vllm(vllm)
+        print_color(f"Evaluating SFT model on test dataset at step {self.ei_cur_step}", color="magenta")
 
         overview = evaluate_responses(
             vllm=vllm,
             prompts=self.test_prompts,
-            answers=self.test_answers,
+            answers=self.test_true_answers,
             sampling_params=self.sampling_params,
         )
 
-        print_color("Evaluation Overview:", color="magenta")
+        print_color("Evaluation Overview", color="magenta")
         print_rich_dict(overview)
         return overview
 
@@ -280,52 +216,65 @@ class EITrainer:
         self,
         vllm=None,
         num_samples: int = 5,
-    ) -> list[str]:
-        print_color(
-            f"Sampling {num_samples} responses from EI model at step {self.ei_cur_step}...", color="cyan"
-        )
-        self._load_into_vllm(vllm)
+    ):
+        print_color(f"Sampling {num_samples} responses from SFT model...", color="cyan")
 
         index = random.sample(range(len(self.test_prompts)), k=num_samples)
         prompts = [self.test_prompts[i] for i in index]
-        true_answers = [self.test_answers[i] for i in index]
+        true_answers = [self.test_true_answers[i] for i in index]
 
-        responses = generate_responses(
-            vllm,
-            prompts,
-            self.sampling_params,
+        out = log_generation(
+            prompts=prompts,
+            true_answers=true_answers,
+            reward_fn=self.reward_fn,
+            model=self.model,
+            tokenizer=self.tokenizer,
+            vllm=vllm,
+            sampling_params=self.sampling_params,
         )
 
-        print_color("Sampled Responses:", color="cyan")
-        for i, (prompt, response, true_answer) in enumerate(zip(prompts, responses, true_answers)):
-            print_color(f"\n=== Example {i + 1} ===", color="cyan")
-            print_color("Prompt: ", color="cyan")
-            print(prompt)
-            print_color("Response: ", color="cyan")
-            print(response)
-            print_color("True Answer: ", color="cyan")
-            print(true_answer)
-
-        return responses
+        print_rich_dict(out)
 
     def sft_train_step(
         self,
         prompts: list[str],
         responses: list[str],
         answers: list[str],
-    ) -> float:
+    ):
         print_color(
             f"ei step {self.ei_cur_step} | Performing SFT training step on {len(prompts)} examples",
             color="green",
         )
 
+        train_dataset = SFTDataset(prompts, responses, answers)
+        train_dataloader = DataLoader(
+            train_dataset,
+            batch_size=self.train_config.sft_micro_batch_size,
+            shuffle=True,
+            collate_fn=lambda batch: sft_collate_fn(batch, self.tokenizer),
+            drop_last=False,
+        )
+        train_dataloader = cycle_dataloader(train_dataloader)
+
+        # Perform SFT steps
+        # Here we assume for each EI step, we do a fixed number of SFT steps
+        # It is also possible to do SFT for one epoch over the filtered dataset
         for _ in range(self.train_config.sft_steps_per_ei_step):
             batch_loss = 0.0
+            token_entropy_avg = 0.0
+            print_color(
+                f"ei step {self.ei_cur_step} | sft step {self.sft_cur_step + 1}/{self.train_config.sft_steps_per_ei_step}",
+                color="green",
+            )
             self.sft_cur_step += 1
-            for _ in trange(self.train_config.sft_gradient_accumulation_steps):
-                micro_batch = get_sft_batch(
-                    prompts, responses, answers, self.tokenizer, batch_size=self.train_config.sft_batch_size
-                )
+
+            # Accumulate gradients over micro-batches
+            for _ in trange(
+                self.train_config.sft_gradient_accumulation_steps,
+                desc="micro-batches",
+                leave=False,
+            ):
+                micro_batch = next(train_dataloader)
                 input_ids = micro_batch["input_ids"].to(self.device, non_blocking=True)
                 labels = micro_batch["labels"].to(self.device, non_blocking=True)
                 response_mask = micro_batch["response_mask"].to(self.device, non_blocking=True)
@@ -335,9 +284,11 @@ class EITrainer:
                         self.model,
                         input_ids=input_ids,
                         labels=labels,
-                        return_token_entropy=False,
+                        return_token_entropy=True,
                     )
+
                     policy_log_probs = policy_outputs["log_probs"]
+                    token_entropy = policy_outputs["token_entropy"]
 
                     loss_scaled, metadata = sft_microbatch_train_step(
                         policy_log_probs=policy_log_probs,
@@ -348,24 +299,35 @@ class EITrainer:
 
                 del input_ids, labels, response_mask
                 batch_loss += to_float(loss_scaled)
-
-                print_color(
-                    f"ei step {self.ei_cur_step} | sft step {self.sft_cur_step} | SFT batch loss: {batch_loss:.4f}",
-                    color="green",
+                token_entropy_avg += (
+                    to_float(token_entropy.mean()) / self.train_config.sft_gradient_accumulation_steps
                 )
+
             nn.utils.clip_grad_norm_(self.model.parameters(), self.train_config.max_grad_norm)
             update_learning_rate(
                 optimizer=self.optimizer,
                 step=self.sft_cur_step,
-                max_lr=self.train_config.max_lr,
                 total_steps=self.train_config.total_training_steps,
+                max_lr=self.train_config.max_lr,
             )
             self.optimizer.step()
             self.optimizer.zero_grad(set_to_none=True)
 
             clear_memory()
 
-        return batch_loss
+            print_color(
+                f"ei step {self.ei_cur_step} | sft step {self.sft_cur_step} | loss: {batch_loss:.4f} | token_entropy: {token_entropy_avg:.4f}",
+                color="green",
+            )
+
+            if self.train_config.wandb_logging:
+                wandb.log(
+                    {
+                        "train/loss": batch_loss,
+                        "train/token_entropy": token_entropy_avg,
+                    },
+                    step=self.sft_cur_step,
+                )
 
     def train(self, vllm=None):
         print_color("||" + "=" * 80, color="green")
@@ -373,14 +335,12 @@ class EITrainer:
         print_color("||Training on dataset: " + self.train_config.dataset_name, color="green")
         print_color("||" + "=" * 80, color="green")
 
-        self._load_into_vllm(vllm)
-
+        load_policy_into_vllm_instance(self.model, vllm)
         for step in range(self.ei_start_step, self.train_config.ei_steps):
             self.model.train()
             self.ei_cur_step = step + 1
 
             # 3. Sample a batch of questions from the training dataset
-
             ei_batch = get_ei_batch(
                 prompts=self.train_prompts,
                 answers=self.train_answers,
@@ -421,23 +381,23 @@ class EITrainer:
 
             # 8. Perform SFT training step on the filtered responses
             if len(filtered_prompts) > 0:
-                self.sft_train_step(
-                    filtered_prompts,
-                    filtered_responses,
-                    filtered_answers,
-                )
+                self.sft_train_step(filtered_prompts, filtered_responses, filtered_answers)
 
             # Evaluation and sampling
             clear_memory()
             log_dict = {}
-            self._load_into_vllm(vllm)  # load updated model into vllm
+            load_policy_into_vllm_instance(self.model, vllm)  # load updated model into vllm
 
-            self.sample_responses(vllm=vllm, num_samples=5)
             out = self.evaluate(vllm)
+            self.sample_responses(
+                vllm=vllm,
+            )
 
             log_dict["eval/answer_accuracy"] = out["answer_accuracy"]
             log_dict["eval/answer_correct"] = out["answer_correct"]
             log_dict["eval/format_correct"] = out["format_correct"]
             log_dict["eval/formatted_but_answer_wrong"] = out["formatted_but_answer_wrong"]
             log_dict["eval/reward_1"] = out["reward_1"]
-            wandb.log(log_dict, step=self.ei_cur_step)
+
+            if self.train_config.wandb_logging:
+                wandb.log(log_dict, step=self.ei_cur_step)
