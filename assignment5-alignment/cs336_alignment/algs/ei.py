@@ -1,7 +1,6 @@
 import os
 import random
 from dataclasses import dataclass, field
-from typing import Callable
 
 import torch
 import torch.nn as nn
@@ -70,7 +69,7 @@ class EITrainConfig(BaseConfig):
     sampling_stop_tokens: list[str] = field(default_factory=lambda: ["</answer>"])
 
     def __post_init__(self):
-        self.run_name = f"ei_dataset({self.dataset_name})_reward({self.reward_fn})_prompt({self.prompt_template_path.split('/')[-1]})"
+        self.run_name = f"ei_dataset({self.dataset_name})_prompt({self.prompt_template_path.split('/')[-1]})_reward({self.reward_fn})"
 
         self.sft_micro_batch_size = self.sft_batch_size // self.sft_gradient_accumulation_steps
         self.total_training_steps = self.ei_steps * self.sft_steps_per_ei_step
