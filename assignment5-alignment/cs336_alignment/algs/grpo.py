@@ -347,7 +347,7 @@ def tokenize_prompt(
     response_mask = []
 
     for p_ids, o_ids in zip(prompt_tokens["input_ids"], gen_ids_list):
-        combined_ids = p_ids + o_ids
+        combined_ids = list(p_ids) + list(o_ids)
         input_ids.append(combined_ids)
         mask = ([False] * len(p_ids)) + ([True] * len(o_ids))
         response_mask.append(mask)
