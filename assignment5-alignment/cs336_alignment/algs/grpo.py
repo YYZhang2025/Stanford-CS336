@@ -519,6 +519,8 @@ class GRPOTrainer:
             self.optimizer.step()
             self.optimizer.zero_grad(set_to_none=True)
 
+        del input_ids, labels, response_mask, old_log_probs
+        clear_memory()
         return raw_rewards, advantages, metadata
 
     def train(
