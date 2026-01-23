@@ -16,7 +16,6 @@ from cs336_alignment.algs.utils import (
     compute_rewards_from_responses,
     get_response_log_probs,
     log_generation,
-    sample_g_outputs_per_prompt,
 )
 from cs336_alignment.base_config import BaseConfig
 from cs336_alignment.eval import evaluate_responses
@@ -30,7 +29,7 @@ from cs336_alignment.utils import (
     print_rich_dict,
     to_float,
 )
-from cs336_alignment.vllm_utils import load_policy_into_vllm_instance
+from cs336_alignment.vllm_utils import generate_responses, load_policy_into_vllm_instance
 
 
 @dataclass
@@ -342,7 +341,7 @@ class EITrainer:
                 batch_size=self.train_config.ei_batch_size,
                 num_responses_per_prompt=self.train_config.num_responses_per_prompt,
             )
-            prompts = ei_batch["prompts"]
+            sampled_prompts = ei_batch["prompts"]
             true_answers = ei_batch["true_answers"]
 
             # 4. Set the old policy model
@@ -353,11 +352,8 @@ class EITrainer:
                 f"Sampling EI batch at EI step {self.ei_cur_step} on {self.train_config.ei_batch_size} samples with {self.train_config.num_responses_per_prompt} responses per prompt",
                 color="green",
             )
-            sampled_prompts, sampled_responses = sample_g_outputs_per_prompt(
-                vllm,
-                self.sampling_params,
-                prompts,
-            )
+
+            sampled_responses = generate_responses(vllm, sampled_prompts, self.sampling_params)
 
             # 6. Compute rewards from the sampled responses
             rewards_dict = compute_rewards_from_responses(
