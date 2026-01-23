@@ -15,8 +15,8 @@ from cs336_alignment.algs.utils import get_response_log_probs, log_generation, t
 from cs336_alignment.base_config import BaseConfig
 from cs336_alignment.drgrpo_grader import question_only_reward_fn, r1_zero_reward_fn
 from cs336_alignment.eval import evaluate_responses
-from cs336_alignment.utils import clear_memory, get_ctx, load_dataset, print_color, print_rich_dict
-from cs336_alignment.vllm_utils import generate_responses, load_policy_into_vllm_instance
+from cs336_alignment.utils import clear_memory, get_ctx, load_dataset, print_color, print_rich_dict, to_float
+from cs336_alignment.vllm_utils import generate_response_with_log_probs, load_policy_into_vllm_instance
 
 REWARD_FN_MAP = {"r1_zero_reward_fn": r1_zero_reward_fn, "question_only_reward_fn": question_only_reward_fn}
 
@@ -65,7 +65,9 @@ class GRPOTrainConfig(BaseConfig):
         self.n_prompts_per_rollout_batch = self.rollout_batch_size // self.group_size
 
 
-def sample_g_outputs_per_prompt(vllm, sampling_params, prompts: list[str]):
+def sample_g_outputs_per_prompt(
+    vllm, sampling_params, prompts: list[str]
+) -> tuple[list[str], list[list[int]], list[list[float]]]:
     rollout_sampling_params = SamplingParams(
         temperature=sampling_params.temperature,
         max_tokens=sampling_params.max_tokens,
@@ -76,12 +78,12 @@ def sample_g_outputs_per_prompt(vllm, sampling_params, prompts: list[str]):
         logprobs=1,
     )
 
-    all_responses, gen_ids, old_log_probs = generate_responses(
+    responses, gen_ids_list, logprobs = generate_response_with_log_probs(
         vllm,
         prompts,
         rollout_sampling_params,
     )
-    return all_responses, gen_ids, old_log_probs
+    return responses, gen_ids_list, logprobs
 
 
 def compute_rewards_from_responses(
@@ -251,7 +253,7 @@ def grpo_microbatch_train_step(
     raw_rewards: torch.Tensor | None = None,
     advantages: torch.Tensor | None = None,
     old_log_probs: torch.Tensor | None = None,
-    cliprange: float | None = 0.2,
+    cliprange: float = 0.2,
 ) -> tuple[torch.Tensor, dict]:
     """
     Compute the GRPO loss over microbatches for training.
@@ -278,55 +280,50 @@ def grpo_microbatch_train_step(
     return masked_loss, metadata
 
 
-def pad_logprobs_to_T(old_lp_list: list[list[float]], T: int, pad_value: float = 0.0) -> torch.Tensor:
-    # old_lp_list: length B, each is length Li (variable)
-    out = []
-    for lp in old_lp_list:
-        lp = lp[:T]  # truncate if longer than T
-        if len(lp) < T:
-            lp = lp + [pad_value] * (T - len(lp))
-        out.append(lp)
-    return torch.tensor(out, dtype=torch.float32)  # [B, T]
+# def pad_logprobs_to_T(old_lp_list: list[list[float]], T: int, pad_value: float = 0.0) -> torch.Tensor:
+#     # old_lp_list: length B, each is length Li (variable)
+#     out = []
+#     for lp in old_lp_list:
+#         lp = [pad_value] * (T - len(lp)) + lp  # left-pad to T
+#         out.append(lp)
+
+#     return torch.tensor(out, dtype=torch.float32)  # [B, T]
 
 
-def align_old_logprobs_to_response_mask(
-    old_lp_list: list[list[float]],
-    response_mask: torch.Tensor,
-    pad_value: float = 0.0,
-) -> torch.Tensor:
-    """Align vLLM per-generated-token old logprobs to packed-sequence positions.
+# def align_old_logprobs_to_response_mask(
+#     old_lp_list: torch.Tensor,
+#     response_mask: torch.Tensor,
+#     pad_value: float = 0.0,
+# ) -> torch.Tensor:
+#     B, T = response_mask.shape
+#     assert response_mask.shape == old_lp_list.shape
 
-    - vLLM returns `old_lp_list[i]` over *generated response tokens only* (variable length).
-    - `response_mask[i]` marks the positions in the packed (prompt+response) sequence that
-      correspond to response tokens whose logprobs we train on.
+#     out = torch.full((B, T), pad_value, dtype=torch.float32)
 
-    This function scatters each sequence's old logprobs into the `True` positions of
-    `response_mask`, leaving prompt / padding positions as `pad_value`.
+#     out.masked_scatter_(response_mask.bool(), old_lp_list)
 
-    Returns:
-        Tensor[float32] of shape [B, T] aligned with `policy_log_probs`.
-    """
-    if response_mask.dim() != 2:
-        raise ValueError(f"response_mask must be [B, T], got shape={tuple(response_mask.shape)}")
+#     return out
 
+
+def pad_logprobs(old_lp_list, response_mask, pad_value=0.0):
     B, T = response_mask.shape
-    out = torch.full((B, T), pad_value, dtype=torch.float32)
+    device = response_mask.device
+    out = torch.full((B, T), pad_value, dtype=torch.float32, device=device)
 
-    # Work on CPU indices for simplicity/portability.
-    mask_cpu = response_mask.detach().to("cpu").to(torch.bool)
-
+    mask = response_mask.bool()
     for i in range(B):
-        idx = torch.nonzero(mask_cpu[i], as_tuple=False).squeeze(-1)
-        if idx.numel() == 0:
-            continue
+        idx = torch.nonzero(mask[i], as_tuple=False).squeeze(-1)
 
         lp = old_lp_list[i]
-        if lp is None or len(lp) == 0:
-            continue
 
+        assert len(lp) <= int(response_mask[i].sum().item())
         n = min(len(lp), idx.numel())
-        out[i, idx[:n]] = torch.tensor(lp[:n], dtype=torch.float32)
 
+        out[i].scatter_(
+            dim=0,
+            index=idx[:n],
+            src=torch.tensor(lp[:n], dtype=torch.float32, device=device),
+        )
     return out
 
 
@@ -454,7 +451,7 @@ class GRPOTrainer:
         # )
 
         print_color("Generating rollout responses...", color="green")
-        (all_responses, gen_ids, old_log_probs) = sample_g_outputs_per_prompt(
+        rollout_responses, _, old_log_probs = sample_g_outputs_per_prompt(
             vllm,
             self.sampling_params,
             sample_prompts,
@@ -464,7 +461,7 @@ class GRPOTrainer:
         repeated_ground_truths = sample_answers
         advantages, raw_rewards, metadata = compute_group_normalized_rewards(
             reward_fn=self.reward_fn,
-            rollout_responses=all_responses,
+            rollout_responses=rollout_responses,
             repeated_ground_truths=repeated_ground_truths,
             group_size=self.train_config.group_size,
             advantage_eps=self.train_config.advantage_eps,
@@ -479,6 +476,7 @@ class GRPOTrainer:
         for train_step in range(n_train_steps):
             clear_memory()
             batch_loss = 0.0
+            token_entropy_avg = 0.0
 
             for micro_step in trange(
                 self.train_config.gradient_accumulation_steps,
@@ -491,37 +489,31 @@ class GRPOTrainer:
                     self.train_config.train_batch_size // self.train_config.gradient_accumulation_steps
                 )
                 micro_prompts = sample_prompts[start_index:end_index]
-                micro_responses = all_responses[start_index:end_index]
+                micro_responses = rollout_responses[start_index:end_index]
                 micro_advantages = torch.tensor(advantages[start_index:end_index]).to(self.device)
                 micro_raw_rewards = torch.tensor(raw_rewards[start_index:end_index]).to(self.device)
-                # micro_old_log_probs = old_log_probs[start_index:end_index]
+                micro_old_log_probs = old_log_probs[start_index:end_index]
 
                 tokenized = tokenize_prompt_and_output(micro_prompts, micro_responses, self.tokenizer)
                 input_ids = tokenized["input_ids"].to(self.device, non_blocking=True)
                 labels = tokenized["labels"].to(self.device, non_blocking=True)
                 response_mask = tokenized["response_mask"].to(self.device, non_blocking=True)
 
-                # T = response_mask.shape[1]
-                # micro_old_log_probs = pad_logprobs_to_T(
-                #     old_lp_list=old_log_probs[start_index:end_index],
-                #     T=T,
-                #     pad_value=0.0,
-                # ).to(self.device, non_blocking=True)
-                # Align vLLM old logprobs (response-only, variable length) to the packed sequence.
-                micro_old_log_probs = align_old_logprobs_to_response_mask(
-                    old_lp_list=old_log_probs[start_index:end_index],
-                    response_mask=response_mask,
-                    pad_value=0.0,
-                ).to(self.device, non_blocking=True)
+                # Pad old_log_probs to align with response_mask
+                micro_old_log_probs = pad_logprobs(
+                    micro_old_log_probs,
+                    response_mask,
+                )
 
                 with self.ctx:
                     policy_outputs = get_response_log_probs(
                         self.model,
                         input_ids=input_ids,
                         labels=labels,
-                        return_token_entropy=False,
+                        return_token_entropy=True,
                     )
                     policy_log_probs = policy_outputs["log_probs"]
+                    token_entropy = policy_outputs["token_entropy"]
 
                 micro_loss, micro_metadata = grpo_microbatch_train_step(
                     policy_log_probs=policy_log_probs,
@@ -534,7 +526,10 @@ class GRPOTrainer:
                     cliprange=self.train_config.cliprange,
                 )
 
-                batch_loss += micro_loss.item()
+                batch_loss += to_float(micro_loss)
+                token_entropy_avg += (
+                    to_float(token_entropy.mean()) / self.train_config.gradient_accumulation_steps
+                )
 
             print_color(
                 f"GRPO Step {self.grpo_cur_step} | Train Step {train_step + 1}/{n_train_steps} | "

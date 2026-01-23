@@ -40,24 +40,27 @@ def generate_responses(vllm: LLM, prompts: list[str], sampling_params) -> list[s
     responses = [output.outputs[0].text for output in outputs]
     return responses
 
-    # if not sampling_params.logprobs:
-    #     responses = [output.outputs[0].text for output in outputs]
-    #     return responses
-    # else:
-    #     assert sampling_params.logprobs == 1, "Only logprobs=1 is supported."
-    #     responses = []
-    #     gen_ids_list = []
-    #     logprobs = []
-    #     for output in outputs:
-    #         sample_out = output.outputs[0]
-    #         responses.append(sample_out.text)
-    #         gen_ids = sample_out.token_ids
-    #         vllm_logprobs = []
-    #         for token_step_logprob_dict in sample_out.logprobs:
-    #             for t_id in token_step_logprob_dict:
-    #                 vllm_logprobs.append(token_step_logprob_dict[t_id].logprob)
 
-    #         gen_ids_list.append(gen_ids)
-    #         logprobs.append(vllm_logprobs)
+def generate_response_with_log_probs(vllm: LLM, prompts: list[str], sampling_params):
+    assert sampling_params.logprobs == 1, "Only logprobs=1 is supported."
+    outputs = vllm.generate(
+        prompts,
+        sampling_params=sampling_params,
+    )
 
-    #     return responses, gen_ids_list, logprobs
+    responses = []
+    gen_ids_list = []
+    logprobs = []
+    for output in outputs:
+        sample_out = output.outputs[0]
+        responses.append(sample_out.text)
+        gen_ids = sample_out.token_ids
+        vllm_logprobs = []
+        for token_step_logprob_dict in sample_out.logprobs:
+            for t_id in token_step_logprob_dict:
+                vllm_logprobs.append(token_step_logprob_dict[t_id].logprob)
+
+        gen_ids_list.append(gen_ids)
+        logprobs.append(vllm_logprobs)
+
+    return responses, gen_ids_list, logprobs

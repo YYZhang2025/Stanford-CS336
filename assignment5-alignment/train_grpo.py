@@ -13,7 +13,7 @@ from cs336_alignment.vllm_utils import init_vllm
 
 def main(
     train_config_path: str = "configs/grpo/train_r1_math.json",
-    dataset_name: str = "math",
+    dataset_name: str = "gsm8k",
 ):
     logging.getLogger("vllm").setLevel(logging.WARNING)
     dotenv.load_dotenv()
