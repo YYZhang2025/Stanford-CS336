@@ -11,13 +11,24 @@ from tqdm import trange
 from transformers import AutoTokenizer, PreTrainedModel
 from vllm import SamplingParams
 
-from cs336_alignment.algs.utils import get_response_log_probs, log_generation, tokenize_prompt_and_output
+from cs336_alignment.algs.utils import (
+    get_response_log_probs,
+    log_generation,
+    masked_mean,
+    tokenize_prompt_and_output,
+)
 from cs336_alignment.base_config import BaseConfig
 from cs336_alignment.drgrpo_grader import question_only_reward_fn, r1_zero_reward_fn
 from cs336_alignment.eval import evaluate_responses
-from cs336_alignment.utils import clear_memory, get_ctx, load_dataset, print_color, print_rich_dict, to_float
+from cs336_alignment.utils import (
+    clear_memory,
+    get_ctx,
+    load_dataset,
+    print_color,
+    print_rich_dict,
+    to_float,
+)
 from cs336_alignment.vllm_utils import (
-    generate_response_with_log_probs,
     generate_responses,
     load_policy_into_vllm_instance,
 )
@@ -39,6 +50,7 @@ class GRPOTrainConfig(BaseConfig):
 
     reward_fn: Literal["r1_zero_reward_fn"] = "r1_zero_reward_fn"
     cliprange: float = 0.2
+    norm_by_std: bool = True
 
     # Optimizer hyperparameters
     loss_type: Literal["no_baseline", "reinforce_with_baseline", "grpo_clip"] = "grpo_clip"
@@ -70,39 +82,7 @@ class GRPOTrainConfig(BaseConfig):
         self.n_prompts_per_rollout_batch = self.rollout_batch_size // self.group_size
 
 
-def sample_g_outputs_per_prompt(
-    vllm, sampling_params, prompts: list[str]
-) -> tuple[list[str], list[list[int]], list[list[float]]]:
-    rollout_sampling_params = SamplingParams(
-        temperature=sampling_params.temperature,
-        max_tokens=sampling_params.max_tokens,
-        min_tokens=sampling_params.min_tokens,
-        top_p=sampling_params.top_p,
-        stop=sampling_params.stop,
-        include_stop_str_in_output=sampling_params.include_stop_str_in_output,
-        logprobs=1,
-    )
-
-    responses, gen_ids_list, logprobs = generate_response_with_log_probs(
-        vllm,
-        prompts,
-        rollout_sampling_params,
-    )
-    return responses, gen_ids_list, logprobs
-
-
-def compute_rewards_from_responses(
-    responses: list[str],
-    answers: list[str],
-    reward_fn: Callable,
-) -> list[dict]:
-    rewards = []
-    for response, answer in zip(responses, answers):
-        reward = reward_fn(response, answer)
-        rewards.append(reward)
-    return rewards
-
-
+## ------ Advantage Computation ------ ##
 def compute_group_normalized_rewards(
     reward_fn: Callable,
     rollout_responses: list[str],
@@ -137,6 +117,7 @@ def compute_group_normalized_rewards(
     return advs, rewards, meta_info
 
 
+## ------ Loss Computation ------ ##
 def compute_naive_policy_gradient_loss(
     raw_rewards_or_advantages: torch.Tensor,
     policy_log_probs: torch.Tensor,
@@ -178,7 +159,7 @@ def compute_grpo_clip_loss(
 def compute_policy_gradient_loss(
     policy_log_probs: torch.Tensor,
     loss_type: Literal["no_baseline", "reinforce_with_baseline", "grpo_clip"],
-    raw_rewards: torch.Tensor,
+    raw_rewards: torch.Tensor | None,
     advantages: torch.Tensor | None,
     old_log_probs: torch.Tensor | None = None,
     cliprange: float = 0.2,
@@ -187,16 +168,14 @@ def compute_policy_gradient_loss(
     Compute the policy-gradient loss at every token.
     """
 
-    if loss_type == "no_baseline":
+    if loss_type == "no_baseline" and raw_rewards is not None:
         loss = compute_naive_policy_gradient_loss(
             raw_rewards_or_advantages=raw_rewards,
             policy_log_probs=policy_log_probs,
         )
         metadata = {}
         return loss, metadata
-    elif loss_type == "reinforce_with_baseline":
-        if advantages is None:
-            raise ValueError("Advantages must be provided for reinforce_with_baseline loss.")
+    elif loss_type == "reinforce_with_baseline" and advantages is not None:
         loss = compute_naive_policy_gradient_loss(
             raw_rewards_or_advantages=advantages,
             policy_log_probs=policy_log_probs,
@@ -219,6 +198,7 @@ def compute_policy_gradient_loss(
         raise ValueError(f"Unknown loss_type: {loss_type}")
 
 
+## ------ Dataset Utils ------ ##
 def sample_batch_questions(
     prompts: list[str],
     answers: list[str],
@@ -236,18 +216,6 @@ def sample_batch_questions(
         batch_answers.extend([a] * group_size)
 
     return batch_prompts, batch_answers
-
-
-def masked_mean(
-    tensor: torch.Tensor,
-    mask: torch.Tensor,
-    dim: int = 0,
-) -> torch.Tensor:
-    masked_tensor = tensor * mask
-    sum_masked = torch.sum(masked_tensor, dim=dim)
-    count_nonzero = torch.sum(mask, dim=dim).clamp(min=1e-8)
-    mean = sum_masked / count_nonzero
-    return mean
 
 
 def grpo_microbatch_train_step(
@@ -401,15 +369,10 @@ class GRPOTrainer:
             self.train_config.group_size,
         )
 
+        # Load old policy into VLLM
         # This will be done at the end of the previous training step while do the evaluation
-        print_color("Load into old policy VLLM instance...", color="green")
-        load_policy_into_vllm_instance(
-            self.model,
-            vllm,
-        )
 
         print_color("Generating rollout responses...", color="green")
-
         rollout_responses = generate_responses(vllm, sample_prompts, self.sampling_params)
 
         tokenized = tokenize_prompt_and_output(
@@ -418,15 +381,27 @@ class GRPOTrainer:
             self.tokenizer,
         )
 
+        print_color("Computing rewards...", color="green")
+        repeated_ground_truths = sample_answers
+        advantages, raw_rewards, metadata = compute_group_normalized_rewards(
+            reward_fn=self.reward_fn,
+            rollout_responses=rollout_responses,
+            repeated_ground_truths=repeated_ground_truths,
+            group_size=self.train_config.group_size,
+            advantage_eps=self.train_config.advantage_eps,
+            normalized_by_std=self.train_config.norm_by_std,
+        )
+
+        print_color("Computing old log probabilities...", color="green")
         input_ids = tokenized["input_ids"].to(self.device, non_blocking=True)
         labels = tokenized["labels"].to(self.device, non_blocking=True)
         response_mask = tokenized["response_mask"].to(self.device, non_blocking=True)
+        ave_length = response_mask.sum(dim=1).float().mean().item()
 
-        print_color("Computing old log probabilities...", color="green")
         old_log_probs = []
         self.model.eval()
         with torch.no_grad():
-            for i in range(0, input_ids.size(0), self.train_config.micro_batch_size):
+            for i in trange(0, input_ids.size(0), self.train_config.micro_batch_size):
                 batch_input_ids = input_ids[i : i + self.train_config.micro_batch_size]
                 batch_labels = labels[i : i + self.train_config.micro_batch_size]
 
@@ -443,27 +418,14 @@ class GRPOTrainer:
         old_log_probs = torch.cat(old_log_probs, dim=0)
         self.model.train()
 
-        print_color("Computing rewards...", color="green")
-        repeated_ground_truths = sample_answers
-        advantages, raw_rewards, metadata = compute_group_normalized_rewards(
-            reward_fn=self.reward_fn,
-            rollout_responses=rollout_responses,
-            repeated_ground_truths=repeated_ground_truths,
-            group_size=self.train_config.group_size,
-            advantage_eps=self.train_config.advantage_eps,
-            normalized_by_std=True,
-        )
-
         n_train_steps = self.train_config.epochs_per_rollout_batch * (
             self.train_config.rollout_batch_size // self.train_config.train_batch_size
         )
 
         print_color(f"Performing {n_train_steps} training steps...", color="green")
+        batch_loss = 0.0
+        token_entropy_avg = 0.0
         for train_step in range(n_train_steps):
-            clear_memory()
-            batch_loss = 0.0
-            token_entropy_avg = 0.0
-
             for micro_step in trange(
                 self.train_config.gradient_accumulation_steps,
                 desc="Microbatches",
@@ -509,10 +471,10 @@ class GRPOTrainer:
 
             print_color(
                 f"GRPO Step {self.grpo_cur_step} | Train Step {train_step + 1}/{n_train_steps} | "
-                f"Batch Loss: {batch_loss:.4f}",
+                f"Batch Loss: {batch_loss:.4f} | Avg Token Entropy: {token_entropy_avg:.4f}",
                 color="green",
             )
-            nn.utils.clip_grad_norm_(
+            grad_norm = nn.utils.clip_grad_norm_(
                 self.model.parameters(),
                 self.train_config.max_grad_norm,
             )
@@ -521,7 +483,13 @@ class GRPOTrainer:
 
         del input_ids, labels, response_mask, old_log_probs
         clear_memory()
-        return raw_rewards, advantages, metadata
+
+        return {
+            "train/batch_loss": batch_loss,
+            "train/token_entropy_avg": token_entropy_avg,
+            "train/grad_norm": grad_norm,
+            "train/ave_length": ave_length,
+        }
 
     def train(
         self,
@@ -531,16 +499,17 @@ class GRPOTrainer:
             self.train_config.n_grpo_cur_steps,
         ):
             self.grpo_cur_step += 1
-            log_dict = {}
+
             print_color(
                 f"\n=== GRPO Training Step {self.grpo_cur_step} / {self.train_config.n_grpo_cur_steps} ===",
                 color="magenta",
             )
 
-            self.grpo_train_step(
+            log_dict = self.grpo_train_step(
                 vllm,
             )
 
+            print_color("Loading current policy into VLLM instance...", color="green")
             load_policy_into_vllm_instance(
                 self.model,
                 vllm,
@@ -556,4 +525,5 @@ class GRPOTrainer:
                 log_dict["eval/format_correct"] = out["format_correct"]
                 log_dict["eval/formatted_but_answer_wrong"] = out["formatted_but_answer_wrong"]
                 log_dict["eval/reward_1"] = out["reward_1"]
-                wandb.log(log_dict, step=self.grpo_cur_step)
+
+            wandb.log(log_dict, step=self.grpo_cur_step)

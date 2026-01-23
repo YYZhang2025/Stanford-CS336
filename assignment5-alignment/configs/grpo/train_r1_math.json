@@ -16,6 +16,7 @@
   "gradient_accumulation_steps": 128,
   "reward_fn": "r1_zero_reward_fn",
   "cliprange": 0.2,
+  "norm_by_std": true,
   "loss_type": "grpo_clip",
   "betas": [
     0.9,

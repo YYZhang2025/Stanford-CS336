@@ -96,13 +96,17 @@ def get_response_log_probs(
     return res
 
 
-# def masked_normalize(
-#     tensor: torch.Tensor, mask: torch.Tensor, normalize_constant: float = 1.0, dim: int | None = None
-# ) -> torch.Tensor:
-#     assert tensor.shape == mask.shape, "Tensor and mask must have the same shape"
-
-#     masked_tensor = torch.where(mask, tensor, torch.zeros_like(tensor))
-#     return torch.sum(masked_tensor, dim=dim) / normalize_constant
+def masked_mean(
+    tensor: torch.Tensor,
+    mask: torch.Tensor,
+    dim: int | None = None,
+) -> torch.Tensor:
+    mask_f = mask.type_as(tensor)
+    masked_tensor = tensor * mask_f
+    sum_masked = torch.sum(masked_tensor, dim=dim)
+    count_nonzero = torch.sum(mask, dim=dim).clamp(min=1e-8)
+    mean = sum_masked / count_nonzero
+    return mean
 
 
 def masked_normalize(
@@ -196,16 +200,6 @@ def log_generation(
 
     model.train()
     return {"summary": summary, "rows": rows}
-
-
-def sample_g_outputs_per_prompt(vllm, sampling_params, prompts: list[str]):
-    all_responses = generate_responses(
-        vllm,
-        prompts,
-        sampling_params,
-    )
-
-    return prompts, all_responses
 
 
 def compute_rewards_from_responses(
