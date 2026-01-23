@@ -330,6 +330,54 @@ def pad_logprobs(old_lp_list, response_mask, pad_value=0.0):
     return out
 
 
+def tokenize_prompt(
+    prompts: list[str],
+    gen_ids_list: list[list[int]],
+    tokenizer,
+):
+    prompt_tokens = tokenizer(
+        prompts,
+        add_special_tokens=False,
+        padding=False,
+        truncation=False,
+        return_attention_mask=False,
+    )
+
+    input_ids = []
+    response_mask = []
+
+    for p_ids, o_ids in zip(prompt_tokens["input_ids"], gen_ids_list):
+        combined_ids = p_ids + o_ids
+        input_ids.append(combined_ids)
+        mask = ([False] * len(p_ids)) + ([True] * len(o_ids))
+        response_mask.append(mask)
+
+    MAX_LEN = max(len(ids) for ids in input_ids)
+    # 151643 for Qwen/Qwen2.5-Math-1.5B
+    pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id
+
+    def pad_to(x, value):
+        return x + [value] * (MAX_LEN - len(x))
+
+    full = torch.tensor([pad_to(x, pad_id) for x in input_ids], dtype=torch.long)
+    response_mask = torch.tensor([pad_to(x, False) for x in response_mask], dtype=torch.bool)
+
+    assert full.shape == response_mask.shape, "Shapes of full and response_mask must match"
+
+    input_ids = full[:, :-1].contiguous()
+    labels = full[:, 1:].contiguous()
+    response_mask = response_mask[:, 1:].contiguous()
+
+    assert input_ids.shape == labels.shape == response_mask.shape, (
+        "Shapes of input_ids, labels, and response_mask must match"
+    )
+    return {
+        "input_ids": input_ids,
+        "labels": labels,
+        "response_mask": response_mask,
+    }
+
+
 class GRPOTrainer:
     def __init__(
         self,
@@ -454,7 +502,7 @@ class GRPOTrainer:
         # )
 
         print_color("Generating rollout responses...", color="green")
-        rollout_responses, _, old_log_probs = sample_g_outputs_per_prompt(
+        rollout_responses, gen_ids_list, old_log_probs = sample_g_outputs_per_prompt(
             vllm,
             self.sampling_params,
             sample_prompts,
@@ -492,18 +540,20 @@ class GRPOTrainer:
                     self.train_config.train_batch_size // self.train_config.gradient_accumulation_steps
                 )
                 micro_prompts = sample_prompts[start_index:end_index]
-                micro_responses = rollout_responses[start_index:end_index]
+                # micro_responses = rollout_responses[start_index:end_index]
+                micro_gen_ids = gen_ids_list[start_index:end_index]
                 micro_advantages = torch.tensor(advantages[start_index:end_index]).to(self.device)
                 micro_raw_rewards = torch.tensor(raw_rewards[start_index:end_index]).to(self.device)
                 micro_old_log_probs = old_log_probs[start_index:end_index]
 
-                tokenized = tokenize_prompt_and_output(micro_prompts, micro_responses, self.tokenizer)
+                # tokenized = tokenize_prompt_and_output(micro_prompts, micro_responses, self.tokenizer)
+                tokenized = tokenize_prompt(micro_prompts, micro_gen_ids, self.tokenizer)
                 input_ids = tokenized["input_ids"].to(self.device, non_blocking=True)
                 labels = tokenized["labels"].to(self.device, non_blocking=True)
                 response_mask = tokenized["response_mask"].to(self.device, non_blocking=True)
 
                 # Pad old_log_probs to align with response_mask
-                print(micro_old_log_probs)
+                # print(micro_old_log_probs)
                 micro_old_log_probs = pad_logprobs(
                     micro_old_log_probs,
                     response_mask,
