@@ -316,6 +316,8 @@ def pad_logprobs(old_lp_list, response_mask, pad_value=0.0):
 
         lp = old_lp_list[i]
 
+        print(len(lp), idx.numel(), int(response_mask[i].sum().item()))
+
         assert len(lp) <= int(response_mask[i].sum().item())
 
         n = min(len(lp), idx.numel())
