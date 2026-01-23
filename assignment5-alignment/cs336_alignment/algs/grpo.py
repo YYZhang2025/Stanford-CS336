@@ -317,6 +317,7 @@ def pad_logprobs(old_lp_list, response_mask, pad_value=0.0):
         lp = old_lp_list[i]
 
         assert len(lp) <= int(response_mask[i].sum().item())
+
         n = min(len(lp), idx.numel())
 
         out[i].scatter_(
@@ -500,6 +501,7 @@ class GRPOTrainer:
                 response_mask = tokenized["response_mask"].to(self.device, non_blocking=True)
 
                 # Pad old_log_probs to align with response_mask
+                print(micro_old_log_probs)
                 micro_old_log_probs = pad_logprobs(
                     micro_old_log_probs,
                     response_mask,
