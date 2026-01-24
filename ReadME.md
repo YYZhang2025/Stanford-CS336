@@ -22,6 +22,7 @@ CS336: Language Modeling from Scratch <br/>
 - [Assignment 05: Alignment \& RLHF (GRPO)](#assignment-05-alignment--rlhf-grpo)
   - [SFT](#sft)
   - [Expert Iteration](#expert-iteration)
+  - [GRPO](#grpo)
 
 
 
@@ -343,7 +344,7 @@ The first algorithm we implement is **Supervised Fine-Tuning (SFT)**. The core i
 
 
 
-```Text
+```Python
 total_training_steps: int = 500         # total number of training steps
 batch_size: int = 4                     # mini-batch size
 gradient_accumulation_steps: int = 64   # gradient accumulation steps
@@ -365,7 +366,7 @@ Under this configuration, we obtain the following training curves:
 
 
 
-![sft-format (1)](./assets/sft-format (1).png)
+![sft-format (1)](./assets/sft-format.png)
 
 
 
@@ -375,7 +376,7 @@ The second algorithm is **Expert Iteration (EI)**, implemented in `assignment5-a
 
 
 
-```Text
+```Python
 ei_steps: int = 5
 ei_batch_size: int = 512
 reward_fn: str = "r1_zero_reward_fn"
@@ -417,7 +418,7 @@ The third algorithm is **Group Relative Policy Optimization (GRPO)**, popularize
 
 
 
-```Text
+```Python
  n_grpo_cur_steps: int = 200
 rollout_batch_size: int = 256
 learning_rate: float = 1e-5
