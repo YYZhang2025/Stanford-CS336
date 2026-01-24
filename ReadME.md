@@ -309,12 +309,141 @@ raise NotImplementedError("This is a placeholder for Assignment 04 solution.")
 
 # Assignment 05: Alignment & RLHF (GRPO)
 
+
+
+In this assignment, we implement LLM alignment, which refers to post-training methods that steer a pretrained language model toward desired behaviors (e.g., following instructions, producing safe and helpful outputs, or solving tasks more reliably).
+
+
+
+For the Reasoing dataset, we are use two main datasets:
+
+
+
+- [GSM8k](https://huggingface.co/datasets/openai/gsm8k): a dataset of 8.5K high quality linguistically diverse grade school math word problems.
+- [Math-12k](https://huggingface.co/datasets/nlile/hendrycks-MATH-benchmark):  a collection of mathematics competition problems
+
+
+
+First, let's see the "zero-shot" ability of the Qwen2.5-Math-1.5B model performance:
+
+
+
+| split | dataset_path      | total | answer_correct | format_correct | reward_1 | formatted_but_answer_wrong | answer_accuracy |
+| ----- | ----------------- | ----- | -------------- | -------------- | -------- | -------------------------- | --------------- |
+| train | math/train.jsonl  | 12000 | 359            | 2038           | 359      | 1679                       | 0.029           |
+| test  | math/test.jsonl   | 500   | 13             | 77             | 13       | 64                         | 0.026           |
+| train | gsm8k/train.jsonl | 7473  | 232            | 1433           | 232      | 1201                       | 0.031           |
+| test  | gsm8k/test.jsonl  | 1319  | 41             | 258            | 41       | 217                        | 0.031           |
+
+
+
 ## SFT 
-![alt text](./assets/sft-reward.png)
-![](./assets/sft-format.png)
+
+The first algorithm we implement is **Supervised Fine-Tuning (SFT)**. The core implementation is in `assignment5-alignment/cs336_alignment/algs/sft.py`. The primary training configuration is:
+
+
+
+```Text
+total_training_steps: int = 500         # total number of training steps
+batch_size: int = 4                     # mini-batch size
+gradient_accumulation_steps: int = 64   # gradient accumulation steps
+
+# Optimizer hyperparameters
+betas: tuple = (0.9, 0.98)
+weight_decay: float = 1e-5
+max_lr: float = 5e-6
+max_grad_norm: float = 1.0
+```
+
+
+
+Under this configuration, we obtain the following training curves:
+
+
+
+![math-gsm8k-accuracy](./assets/math-gsm8k-accuracy.png)
+
+
+
+![sft-format (1)](./assets/sft-format (1).png)
 
 
 
 ## Expert Iteration
-![](./assets/ei-format-reward.png)
-![](./assets/ei-reward.png)
+
+The second algorithm is **Expert Iteration (EI)**, implemented in `assignment5-alignment/cs336_alignment/algs/ei.py`. The training configuration is:
+
+
+
+```Text
+ei_steps: int = 5
+ei_batch_size: int = 512
+reward_fn: str = "r1_zero_reward_fn"
+num_responses_per_prompt: int = 4
+
+# SFT hyperparameters
+sft_steps_per_ei_step: int = 100
+sft_batch_size: int = 128
+sft_gradient_accumulation_steps: int = 64
+
+# Optimizer hyperparameters
+betas: tuple = field(default=(0.9, 0.98))
+weight_decay: float = 1e-5
+max_lr: float = 5e-6
+max_grad_norm: float = 1.0
+```
+
+
+
+
+
+We have those learing curve:
+
+
+
+![ei-gsm8k-accuracy](./assets/ei-gsm8k-accuracy.png)
+
+
+
+
+
+![ei-math-accuracy](./assets/ei-math-accuracy.png)
+
+
+
+## GRPO 
+
+The third algorithm is **Group Relative Policy Optimization (GRPO)**, popularized by **DeepSeek**. The main implementation is located at `assignment5-alignment/cs336_alignment/algs/grpo.py`. The training configuration is:
+
+
+
+```Text
+ n_grpo_cur_steps: int = 200
+rollout_batch_size: int = 256
+learning_rate: float = 1e-5
+advantage_eps: float = 1e-6
+group_size: int = 8
+
+epochs_per_rollout_batch: int = 1
+train_batch_size: int = 256
+gradient_accumulation_steps: int = 128
+
+reward_fn: Literal["r1_zero_reward_fn"] = "r1_zero_reward_fn"
+cliprange: float = 0.2
+norm_by_std: bool = True
+
+# Optimizer hyperparameters
+loss_type: Literal["no_baseline", "reinforce_with_baseline", "grpo_clip"] = "grpo_clip"
+betas: tuple = field(default=(0.9, 0.95))
+weight_decay: float = 0.0
+max_lr: float = 5e-6
+max_grad_norm: float = 1.0
+```
+
+
+
+We have following learing curve:
+
+
+
+![grpo-accureacy](./assets/grpo-accureacy.png)
