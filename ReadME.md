@@ -30,13 +30,7 @@ CS336: Language Modeling from Scratch <br/>
 
 
 
-This repository contains my notes and solutions for the [Stanford CS336: Language Modeling from Scratch](https://stanford-cs336.github.io/spring2025). I also created a website containing more details of the lectures. If you are interested, please go to visited this [website](https://yyzhang2025.github.io/posts/LearningNotes/CS336)
-
-
-
-[![image-20260108073215483](./assets/image-20260108073215483.png)](https://yyzhang2025.github.io/posts/LearningNotes/CS336/)
-
-
+This repository contains my notes and solutions for the [Stanford CS336: Language Modeling from Scratch](https://stanford-cs336.github.io/spring2025). 
 
 
 
